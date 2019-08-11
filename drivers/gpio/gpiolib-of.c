@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * OF helpers for the GPIO API
  *
@@ -54,9 +54,31 @@ static struct gpio_desc *of_xlate_and_get_gpiod_flags(struct gpio_chip *chip,
 }
 
 static void of_gpio_flags_quirks(struct device_node *np,
+				 const char *propname,
 				 enum of_gpio_flags *flags,
 				 int index)
 {
+	/*
+	 * Handle MMC "cd-inverted" and "wp-inverted" semantics.
+	 */
+	if (IS_ENABLED(CONFIG_MMC)) {
+		/*
+		 * Active low is the default according to the
+		 * SDHCI specification and the device tree
+		 * bindings. However the code in the current
+		 * kernel was written such that the phandle
+		 * flags were always respected, and "cd-inverted"
+		 * would invert the flag from the device phandle.
+		 */
+		if (!strcmp(propname, "cd-gpios")) {
+			if (of_property_read_bool(np, "cd-inverted"))
+				*flags ^= OF_GPIO_ACTIVE_LOW;
+		}
+		if (!strcmp(propname, "wp-gpios")) {
+			if (of_property_read_bool(np, "wp-inverted"))
+				*flags ^= OF_GPIO_ACTIVE_LOW;
+		}
+	}
 	/*
 	 * Some GPIO fixed regulator quirks.
 	 * Note that active low is the default.
@@ -64,7 +86,9 @@ static void of_gpio_flags_quirks(struct device_node *np,
 	if (IS_ENABLED(CONFIG_REGULATOR) &&
 	    (of_device_is_compatible(np, "regulator-fixed") ||
 	     of_device_is_compatible(np, "reg-fixed-voltage") ||
-	     of_device_is_compatible(np, "regulator-gpio"))) {
+	     (!(strcmp(propname, "enable-gpio") &&
+		strcmp(propname, "enable-gpios")) &&
+	      of_device_is_compatible(np, "regulator-gpio")))) {
 		/*
 		 * The regulator GPIO handles are specified such that the
 		 * presence or absence of "enable-active-high" solely controls
@@ -95,7 +119,7 @@ static void of_gpio_flags_quirks(struct device_node *np,
 	 * property named "cs-gpios" we need to inspect the child node
 	 * to determine if the flags should have inverted semantics.
 	 */
-	if (IS_ENABLED(CONFIG_SPI_MASTER) &&
+	if (IS_ENABLED(CONFIG_SPI_MASTER) && !strcmp(propname, "cs-gpios") &&
 	    of_property_read_bool(np, "cs-gpios")) {
 		struct device_node *child;
 		u32 cs;
@@ -103,7 +127,7 @@ static void of_gpio_flags_quirks(struct device_node *np,
 
 		for_each_child_of_node(np, child) {
 			ret = of_property_read_u32(child, "reg", &cs);
-			if (!ret)
+			if (ret)
 				continue;
 			if (cs == index) {
 				/*
@@ -118,22 +142,29 @@ static void of_gpio_flags_quirks(struct device_node *np,
 				 * conflict and the "spi-cs-high" flag will
 				 * take precedence.
 				 */
-				if (of_property_read_bool(np, "spi-cs-high")) {
+				if (of_property_read_bool(child, "spi-cs-high")) {
 					if (*flags & OF_GPIO_ACTIVE_LOW) {
 						pr_warn("%s GPIO handle specifies active low - ignored\n",
-							of_node_full_name(np));
+							of_node_full_name(child));
 						*flags &= ~OF_GPIO_ACTIVE_LOW;
 					}
 				} else {
 					if (!(*flags & OF_GPIO_ACTIVE_LOW))
 						pr_info("%s enforce active low on chipselect handle\n",
-							of_node_full_name(np));
+							of_node_full_name(child));
 					*flags |= OF_GPIO_ACTIVE_LOW;
 				}
+				of_node_put(child);
 				break;
 			}
 		}
 	}
+
+	/* Legacy handling of stmmac's active-low PHY reset line */
+	if (IS_ENABLED(CONFIG_STMMAC_ETH) &&
+	    !strcmp(propname, "snps,reset-gpio") &&
+	    of_property_read_bool(np, "snps,reset-active-low"))
+		*flags |= OF_GPIO_ACTIVE_LOW;
 }
 
 /**
@@ -174,7 +205,7 @@ struct gpio_desc *of_get_named_gpiod_flags(struct device_node *np,
 		goto out;
 
 	if (flags)
-		of_gpio_flags_quirks(np, flags, index);
+		of_gpio_flags_quirks(np, propname, flags, index);
 
 	pr_debug("%s: parsed '%s' property of node '%pOF[%d]' - status (%d)\n",
 		 __func__, propname, np, index,
@@ -231,6 +262,37 @@ static struct gpio_desc *of_find_spi_gpio(struct device *dev, const char *con_id
 }
 
 /*
+ * The old Freescale bindings use simply "gpios" as name for the chip select
+ * lines rather than "cs-gpios" like all other SPI hardware. Account for this
+ * with a special quirk.
+ */
+static struct gpio_desc *of_find_spi_cs_gpio(struct device *dev,
+					     const char *con_id,
+					     unsigned int idx,
+					     unsigned long *flags)
+{
+	struct device_node *np = dev->of_node;
+
+	if (!IS_ENABLED(CONFIG_SPI_MASTER))
+		return ERR_PTR(-ENOENT);
+
+	/* Allow this specifically for Freescale devices */
+	if (!of_device_is_compatible(np, "fsl,spi") &&
+	    !of_device_is_compatible(np, "aeroflexgaisler,spictrl"))
+		return ERR_PTR(-ENOENT);
+	/* Allow only if asking for "cs-gpios" */
+	if (!con_id || strcmp(con_id, "cs"))
+		return ERR_PTR(-ENOENT);
+
+	/*
+	 * While all other SPI controllers use "cs-gpios" the Freescale
+	 * uses just "gpios" so translate to that when "cs-gpios" is
+	 * requested.
+	 */
+	return of_find_gpio(dev, NULL, idx, flags);
+}
+
+/*
  * Some regulator bindings happened before we managed to establish that GPIO
  * properties should be named "foo-gpios" so we have this special kludge for
  * them.
@@ -263,8 +325,7 @@ static struct gpio_desc *of_find_regulator_gpio(struct device *dev, const char *
 }
 
 struct gpio_desc *of_find_gpio(struct device *dev, const char *con_id,
-			       unsigned int idx,
-			       enum gpio_lookup_flags *flags)
+			       unsigned int idx, unsigned long *flags)
 {
 	char prop_name[32]; /* 32 is max size of property name */
 	enum of_gpio_flags of_flags;
@@ -302,6 +363,12 @@ struct gpio_desc *of_find_gpio(struct device *dev, const char *con_id,
 	/* Special handling for SPI GPIOs if used */
 	if (IS_ERR(desc))
 		desc = of_find_spi_gpio(dev, con_id, &of_flags);
+	if (IS_ERR(desc)) {
+		/* This quirk looks up flags and all */
+		desc = of_find_spi_cs_gpio(dev, con_id, idx, flags);
+		if (!IS_ERR(desc))
+			return desc;
+	}
 
 	/* Special handling for regulator GPIOs if used */
 	if (IS_ERR(desc) && PTR_ERR(desc) != -EPROBE_DEFER)
@@ -323,6 +390,11 @@ struct gpio_desc *of_find_gpio(struct device *dev, const char *con_id,
 	if (of_flags & OF_GPIO_TRANSITORY)
 		*flags |= GPIO_TRANSITORY;
 
+	if (of_flags & OF_GPIO_PULL_UP)
+		*flags |= GPIO_PULL_UP;
+	if (of_flags & OF_GPIO_PULL_DOWN)
+		*flags |= GPIO_PULL_DOWN;
+
 	return desc;
 }
 
@@ -332,8 +404,8 @@ struct gpio_desc *of_find_gpio(struct device *dev, const char *con_id,
  * @chip:	GPIO chip whose hog is parsed
  * @idx:	Index of the GPIO to parse
  * @name:	GPIO line name
- * @lflags:	gpio_lookup_flags - returned from of_find_gpio() or
- *		of_parse_own_gpio()
+ * @lflags:	bitmask of gpio_lookup_flags GPIO_* values - returned from
+ *		of_find_gpio() or of_parse_own_gpio()
  * @dflags:	gpiod_flags - optional GPIO initialization flags
  *
  * Returns GPIO descriptor to use with Linux GPIO API, or one of the errno
@@ -342,7 +414,7 @@ struct gpio_desc *of_find_gpio(struct device *dev, const char *con_id,
 static struct gpio_desc *of_parse_own_gpio(struct device_node *np,
 					   struct gpio_chip *chip,
 					   unsigned int idx, const char **name,
-					   enum gpio_lookup_flags *lflags,
+					   unsigned long *lflags,
 					   enum gpiod_flags *dflags)
 {
 	struct device_node *chip_np;
@@ -358,7 +430,7 @@ static struct gpio_desc *of_parse_own_gpio(struct device_node *np,
 		return ERR_PTR(-EINVAL);
 
 	xlate_flags = 0;
-	*lflags = 0;
+	*lflags = GPIO_LOOKUP_FLAGS_DEFAULT;
 	*dflags = 0;
 
 	ret = of_property_read_u32(chip_np, "#gpio-cells", &tmp);
@@ -415,7 +487,7 @@ static int of_gpiochip_scan_gpios(struct gpio_chip *chip)
 	struct gpio_desc *desc = NULL;
 	struct device_node *np;
 	const char *name;
-	enum gpio_lookup_flags lflags;
+	unsigned long lflags;
 	enum gpiod_flags dflags;
 	unsigned int i;
 	int ret;
@@ -688,7 +760,13 @@ int of_gpiochip_add(struct gpio_chip *chip)
 
 	of_node_get(chip->of_node);
 
-	return of_gpiochip_scan_gpios(chip);
+	status = of_gpiochip_scan_gpios(chip);
+	if (status) {
+		of_node_put(chip->of_node);
+		gpiochip_remove_pin_ranges(chip);
+	}
+
+	return status;
 }
 
 void of_gpiochip_remove(struct gpio_chip *chip)

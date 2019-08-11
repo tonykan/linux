@@ -1,8 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * oxfw.c - a part of driver for OXFW970/971 based devices
  *
  * Copyright (c) Clemens Ladisch <clemens@ladisch.de>
- * Licensed under the terms of the GNU General Public License, version 2.
  */
 
 #include "oxfw.h"
@@ -20,6 +20,7 @@
 #define VENDOR_LACIE		0x00d04b
 #define VENDOR_TASCAM		0x00022e
 #define OUI_STANTON		0x001260
+#define OUI_APOGEE		0x0003db
 
 #define MODEL_SATELLITE		0x00200f
 
@@ -117,9 +118,7 @@ static void oxfw_card_free(struct snd_card *card)
 {
 	struct snd_oxfw *oxfw = card->private_data;
 
-	snd_oxfw_stream_destroy_simplex(oxfw, &oxfw->rx_stream);
-	if (oxfw->has_output)
-		snd_oxfw_stream_destroy_simplex(oxfw, &oxfw->tx_stream);
+	snd_oxfw_stream_destroy_duplex(oxfw);
 }
 
 static int detect_quirks(struct snd_oxfw *oxfw)
@@ -146,9 +145,6 @@ static int detect_quirks(struct snd_oxfw *oxfw)
 		/* No physical MIDI ports. */
 		oxfw->midi_input_ports = 0;
 		oxfw->midi_output_ports = 0;
-
-		/* Output stream exists but no data channels are useful. */
-		oxfw->has_output = false;
 
 		return snd_oxfw_scs1x_add(oxfw);
 	}
@@ -210,14 +206,9 @@ static void do_registration(struct work_struct *work)
 	if (err < 0)
 		goto error;
 
-	err = snd_oxfw_stream_init_simplex(oxfw, &oxfw->rx_stream);
+	err = snd_oxfw_stream_init_duplex(oxfw);
 	if (err < 0)
 		goto error;
-	if (oxfw->has_output) {
-		err = snd_oxfw_stream_init_simplex(oxfw, &oxfw->tx_stream);
-		if (err < 0)
-			goto error;
-	}
 
 	err = snd_oxfw_create_pcm(oxfw);
 	if (err < 0)
@@ -284,11 +275,7 @@ static void oxfw_bus_reset(struct fw_unit *unit)
 
 	if (oxfw->registered) {
 		mutex_lock(&oxfw->mutex);
-
-		snd_oxfw_stream_update_simplex(oxfw, &oxfw->rx_stream);
-		if (oxfw->has_output)
-			snd_oxfw_stream_update_simplex(oxfw, &oxfw->tx_stream);
-
+		snd_oxfw_stream_update_duplex(oxfw);
 		mutex_unlock(&oxfw->mutex);
 
 		if (oxfw->entry->vendor_id == OUI_STANTON)
@@ -396,6 +383,13 @@ static const struct ieee1394_device_id oxfw_id_table[] = {
 				  IEEE1394_MATCH_MODEL_ID,
 		.vendor_id	= OUI_STANTON,
 		.model_id	= 0x002000,
+	},
+	// APOGEE, duet FireWire
+	{
+		.match_flags	= IEEE1394_MATCH_VENDOR_ID |
+				  IEEE1394_MATCH_MODEL_ID,
+		.vendor_id	= OUI_APOGEE,
+		.model_id	= 0x01dddd,
 	},
 	{ }
 };

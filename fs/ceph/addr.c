@@ -10,6 +10,7 @@
 #include <linux/pagevec.h>
 #include <linux/task_io_accounting_ops.h>
 #include <linux/signal.h>
+#include <linux/iversion.h>
 
 #include "super.h"
 #include "mds_client.h"
@@ -306,7 +307,7 @@ static int start_read(struct inode *inode, struct ceph_rw_context *rw_ctx,
 	struct ceph_osd_client *osdc =
 		&ceph_inode_to_client(inode)->client->osdc;
 	struct ceph_inode_info *ci = ceph_inode(inode);
-	struct page *page = list_entry(page_list->prev, struct page, lru);
+	struct page *page = lru_to_page(page_list);
 	struct ceph_vino vino;
 	struct ceph_osd_request *req;
 	u64 off;
@@ -333,8 +334,7 @@ static int start_read(struct inode *inode, struct ceph_rw_context *rw_ctx,
 			if (got)
 				ceph_put_cap_refs(ci, got);
 			while (!list_empty(page_list)) {
-				page = list_entry(page_list->prev,
-						  struct page, lru);
+				page = lru_to_page(page_list);
 				list_del(&page->lru);
 				put_page(page);
 			}
@@ -1495,10 +1495,7 @@ static vm_fault_t ceph_filemap_fault(struct vm_fault *vmf)
 		if (err < 0 || off >= i_size_read(inode)) {
 			unlock_page(page);
 			put_page(page);
-			if (err == -ENOMEM)
-				ret = VM_FAULT_OOM;
-			else
-				ret = VM_FAULT_SIGBUS;
+			ret = vmf_error(err);
 			goto out_inline;
 		}
 		if (err < PAGE_SIZE)
@@ -1580,6 +1577,7 @@ static vm_fault_t ceph_page_mkwrite(struct vm_fault *vmf)
 
 	/* Update time before taking page lock */
 	file_update_time(vma->vm_file);
+	inode_inc_iversion_raw(inode);
 
 	do {
 		lock_page(page);

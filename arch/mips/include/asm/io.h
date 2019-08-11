@@ -102,9 +102,6 @@ static inline void set_io_port_base(unsigned long base)
 #define iobarrier_w() wmb()
 #define iobarrier_sync() iob()
 
-/* Some callers use this older API instead.  */
-#define mmiowb() iobarrier_w()
-
 /*
  *     virt_to_phys    -       map virtual addresses to physical
  *     @address: address to remap
@@ -151,8 +148,6 @@ static inline void *isa_bus_to_virt(unsigned long address)
 {
 	return phys_to_virt(address);
 }
-
-#define isa_page_to_bus page_to_phys
 
 /*
  * However PCI ones are not necessarily 1:1 and therefore these interfaces
@@ -215,6 +210,18 @@ static inline void __iomem * __ioremap_mode(phys_addr_t offset, unsigned long si
 	return __ioremap(offset, size, flags);
 
 #undef __IS_LOW512
+}
+
+/*
+ * ioremap_prot     -   map bus memory into CPU space
+ * @offset:    bus address of the memory
+ * @size:      size of the resource to map
+
+ * ioremap_prot gives the caller control over cache coherency attributes (CCA)
+ */
+static inline void __iomem *ioremap_prot(phys_addr_t offset,
+		unsigned long size, unsigned long prot_val) {
+	return __ioremap_mode(offset, size, prot_val & _CACHE_MASK);
 }
 
 /*
@@ -342,13 +349,14 @@ static inline void pfx##write##bwlq(type val,				\
 		if (irq)						\
 			local_irq_save(__flags);			\
 		__asm__ __volatile__(					\
-			".set	arch=r4000"	"\t\t# __writeq""\n\t"	\
+			".set	push"		"\t\t# __writeq""\n\t"	\
+			".set	arch=r4000"			"\n\t"	\
 			"dsll32 %L0, %L0, 0"			"\n\t"	\
 			"dsrl32 %L0, %L0, 0"			"\n\t"	\
 			"dsll32 %M0, %M0, 0"			"\n\t"	\
 			"or	%L0, %L0, %M0"			"\n\t"	\
 			"sd	%L0, %2"			"\n\t"	\
-			".set	mips0"				"\n"	\
+			".set	pop"				"\n"	\
 			: "=r" (__tmp)					\
 			: "0" (__val), "m" (*__mem));			\
 		if (irq)						\
@@ -375,11 +383,12 @@ static inline type pfx##read##bwlq(const volatile void __iomem *mem)	\
 		if (irq)						\
 			local_irq_save(__flags);			\
 		__asm__ __volatile__(					\
-			".set	arch=r4000"	"\t\t# __readq" "\n\t"	\
+			".set	push"		"\t\t# __readq" "\n\t"	\
+			".set	arch=r4000"			"\n\t"	\
 			"ld	%L0, %1"			"\n\t"	\
 			"dsra32 %M0, %L0, 0"			"\n\t"	\
 			"sll	%L0, %L0, 0"			"\n\t"	\
-			".set	mips0"				"\n"	\
+			".set	pop"				"\n"	\
 			: "=r" (__val)					\
 			: "m" (*__mem));				\
 		if (irq)						\
@@ -451,7 +460,12 @@ __BUILD_MEMORY_PFX(, bwlq, type, 0)
 BUILDIO_MEM(b, u8)
 BUILDIO_MEM(w, u16)
 BUILDIO_MEM(l, u32)
+#ifdef CONFIG_64BIT
 BUILDIO_MEM(q, u64)
+#else
+__BUILD_MEMORY_PFX(__raw_, q, u64, 0)
+__BUILD_MEMORY_PFX(__mem_, q, u64, 0)
+#endif
 
 #define __BUILD_IOPORT_PFX(bus, bwlq, type)				\
 	__BUILD_IOPORT_SINGLE(bus, bwlq, type, 1, 0,)			\
@@ -477,12 +491,16 @@ __BUILDIO(q, u64)
 #define readb_relaxed			__relaxed_readb
 #define readw_relaxed			__relaxed_readw
 #define readl_relaxed			__relaxed_readl
+#ifdef CONFIG_64BIT
 #define readq_relaxed			__relaxed_readq
+#endif
 
 #define writeb_relaxed			__relaxed_writeb
 #define writew_relaxed			__relaxed_writew
 #define writel_relaxed			__relaxed_writel
+#ifdef CONFIG_64BIT
 #define writeq_relaxed			__relaxed_writeq
+#endif
 
 #define readb_be(addr)							\
 	__raw_readb((__force unsigned *)(addr))
@@ -505,8 +523,10 @@ __BUILDIO(q, u64)
 /*
  * Some code tests for these symbols
  */
+#ifdef CONFIG_64BIT
 #define readq				readq
 #define writeq				writeq
+#endif
 
 #define __BUILD_MEMORY_STRING(bwlq, type)				\
 									\

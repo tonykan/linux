@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This is the linux wireless configuration interface.
  *
  * Copyright 2006-2010		Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
  * Copyright 2015-2017	Intel Deutschland GmbH
+ * Copyright (C) 2018 Intel Corporation
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -190,10 +192,24 @@ int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
 		return err;
 	}
 
+	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
+		if (!wdev->netdev)
+			continue;
+		nl80211_notify_iface(rdev, wdev, NL80211_CMD_DEL_INTERFACE);
+	}
+	nl80211_notify_wiphy(rdev, NL80211_CMD_DEL_WIPHY);
+
 	wiphy_net_set(&rdev->wiphy, net);
 
 	err = device_rename(&rdev->wiphy.dev, dev_name(&rdev->wiphy.dev));
 	WARN_ON(err);
+
+	nl80211_notify_wiphy(rdev, NL80211_CMD_NEW_WIPHY);
+	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
+		if (!wdev->netdev)
+			continue;
+		nl80211_notify_iface(rdev, wdev, NL80211_CMD_NEW_INTERFACE);
+	}
 
 	return 0;
 }
@@ -498,7 +514,7 @@ use_default_name:
 				   &rdev->rfkill_ops, rdev);
 
 	if (!rdev->rfkill) {
-		kfree(rdev);
+		wiphy_free(&rdev->wiphy);
 		return NULL;
 	}
 
@@ -664,6 +680,34 @@ int wiphy_register(struct wiphy *wiphy)
 		return -EINVAL;
 #endif
 
+	if (WARN_ON(wiphy->pmsr_capa && !wiphy->pmsr_capa->ftm.supported))
+		return -EINVAL;
+
+	if (wiphy->pmsr_capa && wiphy->pmsr_capa->ftm.supported) {
+		if (WARN_ON(!wiphy->pmsr_capa->ftm.asap &&
+			    !wiphy->pmsr_capa->ftm.non_asap))
+			return -EINVAL;
+		if (WARN_ON(!wiphy->pmsr_capa->ftm.preambles ||
+			    !wiphy->pmsr_capa->ftm.bandwidths))
+			return -EINVAL;
+		if (WARN_ON(wiphy->pmsr_capa->ftm.preambles &
+				~(BIT(NL80211_PREAMBLE_LEGACY) |
+				  BIT(NL80211_PREAMBLE_HT) |
+				  BIT(NL80211_PREAMBLE_VHT) |
+				  BIT(NL80211_PREAMBLE_DMG))))
+			return -EINVAL;
+		if (WARN_ON(wiphy->pmsr_capa->ftm.bandwidths &
+				~(BIT(NL80211_CHAN_WIDTH_20_NOHT) |
+				  BIT(NL80211_CHAN_WIDTH_20) |
+				  BIT(NL80211_CHAN_WIDTH_40) |
+				  BIT(NL80211_CHAN_WIDTH_80) |
+				  BIT(NL80211_CHAN_WIDTH_80P80) |
+				  BIT(NL80211_CHAN_WIDTH_160) |
+				  BIT(NL80211_CHAN_WIDTH_5) |
+				  BIT(NL80211_CHAN_WIDTH_10))))
+			return -EINVAL;
+	}
+
 	/*
 	 * if a wiphy has unsupported modes for regulatory channel enforcement,
 	 * opt-out of enforcement checking
@@ -813,6 +857,19 @@ int wiphy_register(struct wiphy *wiphy)
 	if (!have_band) {
 		WARN_ON(1);
 		return -EINVAL;
+	}
+
+	for (i = 0; i < rdev->wiphy.n_vendor_commands; i++) {
+		/*
+		 * Validate we have a policy (can be explicitly set to
+		 * VENDOR_CMD_RAW_DATA which is non-NULL) and also that
+		 * we have at least one of doit/dumpit.
+		 */
+		if (WARN_ON(!rdev->wiphy.vendor_commands[i].policy))
+			return -EINVAL;
+		if (WARN_ON(!rdev->wiphy.vendor_commands[i].doit &&
+			    !rdev->wiphy.vendor_commands[i].dumpit))
+			return -EINVAL;
 	}
 
 #ifdef CONFIG_PM
@@ -1025,6 +1082,8 @@ static void __cfg80211_unregister_wdev(struct wireless_dev *wdev, bool sync)
 
 	ASSERT_RTNL();
 
+	flush_work(&wdev->pmsr_free_wk);
+
 	nl80211_notify_iface(rdev, wdev, NL80211_CMD_DEL_INTERFACE);
 
 	list_del_rcu(&wdev->list);
@@ -1086,6 +1145,8 @@ void __cfg80211_leave(struct cfg80211_registered_device *rdev,
 
 	ASSERT_RTNL();
 	ASSERT_WDEV_LOCK(wdev);
+
+	cfg80211_pmsr_wdev_down(wdev);
 
 	switch (wdev->iftype) {
 	case NL80211_IFTYPE_ADHOC:
@@ -1174,6 +1235,9 @@ void cfg80211_init_wdev(struct cfg80211_registered_device *rdev,
 	spin_lock_init(&wdev->event_lock);
 	INIT_LIST_HEAD(&wdev->mgmt_registrations);
 	spin_lock_init(&wdev->mgmt_registrations_lock);
+	INIT_LIST_HEAD(&wdev->pmsr_list);
+	spin_lock_init(&wdev->pmsr_lock);
+	INIT_WORK(&wdev->pmsr_free_wk, cfg80211_pmsr_free_wk);
 
 	/*
 	 * We get here also when the interface changes network namespaces,
@@ -1346,8 +1410,10 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 		}
 		break;
 	case NETDEV_PRE_UP:
-		if (!(wdev->wiphy->interface_modes & BIT(wdev->iftype)))
+		if (!cfg80211_iftype_allowed(wdev->wiphy, wdev->iftype,
+					     wdev->use_4addr, 0))
 			return notifier_from_errno(-EOPNOTSUPP);
+
 		if (rfkill_blocked(rdev->rfkill))
 			return notifier_from_errno(-ERFKILL);
 		break;

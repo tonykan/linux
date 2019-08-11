@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2007-2014 Nicira, Inc.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of version 2 of the GNU General Public
- * License as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA
  */
 
 #include <linux/uaccess.h>
@@ -72,7 +59,7 @@ u64 ovs_flow_used_time(unsigned long flow_jiffies)
 void ovs_flow_stats_update(struct sw_flow *flow, __be16 tcp_flags,
 			   const struct sk_buff *skb)
 {
-	struct flow_stats *stats;
+	struct sw_flow_stats *stats;
 	unsigned int cpu = smp_processor_id();
 	int len = skb->len + (skb_vlan_tag_present(skb) ? VLAN_HLEN : 0);
 
@@ -100,7 +87,7 @@ void ovs_flow_stats_update(struct sw_flow *flow, __be16 tcp_flags,
 			if (likely(flow->stats_last_writer != -1) &&
 			    likely(!rcu_access_pointer(flow->stats[cpu]))) {
 				/* Try to allocate CPU-specific stats. */
-				struct flow_stats *new_stats;
+				struct sw_flow_stats *new_stats;
 
 				new_stats =
 					kmem_cache_alloc_node(flow_stats_cache,
@@ -147,7 +134,7 @@ void ovs_flow_stats_get(const struct sw_flow *flow,
 
 	/* We open code this to make sure cpu 0 is always considered */
 	for (cpu = 0; cpu < nr_cpu_ids; cpu = cpumask_next(cpu, &flow->cpu_used_mask)) {
-		struct flow_stats *stats = rcu_dereference_ovsl(flow->stats[cpu]);
+		struct sw_flow_stats *stats = rcu_dereference_ovsl(flow->stats[cpu]);
 
 		if (stats) {
 			/* Local CPU may write on non-local stats, so we must
@@ -171,7 +158,7 @@ void ovs_flow_stats_clear(struct sw_flow *flow)
 
 	/* We open code this to make sure cpu 0 is always considered */
 	for (cpu = 0; cpu < nr_cpu_ids; cpu = cpumask_next(cpu, &flow->cpu_used_mask)) {
-		struct flow_stats *stats = ovsl_dereference(flow->stats[cpu]);
+		struct sw_flow_stats *stats = ovsl_dereference(flow->stats[cpu]);
 
 		if (stats) {
 			spin_lock_bh(&stats->lock);
@@ -276,10 +263,12 @@ static int parse_ipv6hdr(struct sk_buff *skb, struct sw_flow_key *key)
 
 	nexthdr = ipv6_find_hdr(skb, &payload_ofs, -1, &frag_off, &flags);
 	if (flags & IP6_FH_F_FRAG) {
-		if (frag_off)
+		if (frag_off) {
 			key->ip.frag = OVS_FRAG_TYPE_LATER;
-		else
-			key->ip.frag = OVS_FRAG_TYPE_FIRST;
+			key->ip.proto = nexthdr;
+			return 0;
+		}
+		key->ip.frag = OVS_FRAG_TYPE_FIRST;
 	} else {
 		key->ip.frag = OVS_FRAG_TYPE_NONE;
 	}
@@ -325,7 +314,7 @@ static int parse_vlan_tag(struct sk_buff *skb, struct vlan_head *key_vh,
 		return -ENOMEM;
 
 	vh = (struct vlan_head *)skb->data;
-	key_vh->tci = vh->tci | htons(VLAN_TAG_PRESENT);
+	key_vh->tci = vh->tci | htons(VLAN_CFI_MASK);
 	key_vh->tpid = vh->tpid;
 
 	if (unlikely(untag_vlan)) {
@@ -358,7 +347,7 @@ static int parse_vlan(struct sk_buff *skb, struct sw_flow_key *key)
 	int res;
 
 	if (skb_vlan_tag_present(skb)) {
-		key->eth.vlan.tci = htons(skb->vlan_tci);
+		key->eth.vlan.tci = htons(skb->vlan_tci) | htons(VLAN_CFI_MASK);
 		key->eth.vlan.tpid = skb->vlan_proto;
 	} else {
 		/* Parse outer vlan tag in the non-accelerated case. */
@@ -597,7 +586,7 @@ static int key_extract(struct sk_buff *skb, struct sw_flow_key *key)
 		 * skb_vlan_pop(), which will later shift the ethertype into
 		 * skb->protocol.
 		 */
-		if (key->eth.cvlan.tci & htons(VLAN_TAG_PRESENT))
+		if (key->eth.cvlan.tci & htons(VLAN_CFI_MASK))
 			skb->protocol = key->eth.cvlan.tpid;
 		else
 			skb->protocol = key->eth.type;

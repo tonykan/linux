@@ -869,9 +869,6 @@ static void bnx2x_hc_int_disable(struct bnx2x *bp)
 	   "write %x to HC %d (addr 0x%x)\n",
 	   val, port, addr);
 
-	/* flush all outstanding writes */
-	mmiowb();
-
 	REG_WR(bp, addr, val);
 	if (REG_RD(bp, addr) != val)
 		BNX2X_ERR("BUG! Proper val not read from IGU!\n");
@@ -886,9 +883,6 @@ static void bnx2x_igu_int_disable(struct bnx2x *bp)
 		 IGU_PF_CONF_ATTN_BIT_EN);
 
 	DP(NETIF_MSG_IFDOWN, "write %x to IGU\n", val);
-
-	/* flush all outstanding writes */
-	mmiowb();
 
 	REG_WR(bp, IGU_REG_PF_CONFIGURATION, val);
 	if (REG_RD(bp, IGU_REG_PF_CONFIGURATION) != val)
@@ -1595,7 +1589,6 @@ static void bnx2x_hc_int_enable(struct bnx2x *bp)
 	/*
 	 * Ensure that HC_CONFIG is written before leading/trailing edge config
 	 */
-	mmiowb();
 	barrier();
 
 	if (!CHIP_IS_E1(bp)) {
@@ -1611,9 +1604,6 @@ static void bnx2x_hc_int_enable(struct bnx2x *bp)
 		REG_WR(bp, HC_REG_TRAILING_EDGE_0 + port*8, val);
 		REG_WR(bp, HC_REG_LEADING_EDGE_0 + port*8, val);
 	}
-
-	/* Make sure that interrupts are indeed enabled from here on */
-	mmiowb();
 }
 
 static void bnx2x_igu_int_enable(struct bnx2x *bp)
@@ -1674,9 +1664,6 @@ static void bnx2x_igu_int_enable(struct bnx2x *bp)
 
 	REG_WR(bp, IGU_REG_TRAILING_EDGE_LATCH, val);
 	REG_WR(bp, IGU_REG_LEADING_EDGE_LATCH, val);
-
-	/* Make sure that interrupts are indeed enabled from here on */
-	mmiowb();
 }
 
 void bnx2x_int_enable(struct bnx2x *bp)
@@ -3833,7 +3820,6 @@ static void bnx2x_sp_prod_update(struct bnx2x *bp)
 
 	REG_WR16_RELAXED(bp, BAR_XSTRORM_INTMEM + XSTORM_SPQ_PROD_OFFSET(func),
 			 bp->spq_prod_idx);
-	mmiowb();
 }
 
 /**
@@ -5244,7 +5230,6 @@ static void bnx2x_update_eq_prod(struct bnx2x *bp, u16 prod)
 {
 	/* No memory barriers */
 	storm_memset_eq_prod(bp, prod, BP_FUNC(bp));
-	mmiowb(); /* keep prod updates ordered */
 }
 
 static int  bnx2x_cnic_handle_cfc_del(struct bnx2x *bp, u32 cid,
@@ -6513,7 +6498,6 @@ void bnx2x_nic_init_cnic(struct bnx2x *bp)
 
 	/* flush all */
 	mb();
-	mmiowb();
 }
 
 void bnx2x_pre_irq_nic_init(struct bnx2x *bp)
@@ -6553,7 +6537,6 @@ void bnx2x_post_irq_nic_init(struct bnx2x *bp, u32 load_code)
 
 	/* flush all before enabling interrupts */
 	mb();
-	mmiowb();
 
 	bnx2x_int_enable(bp);
 
@@ -7775,12 +7758,10 @@ void bnx2x_igu_clear_sb_gen(struct bnx2x *bp, u8 func, u8 idu_sb_id, bool is_pf)
 	DP(NETIF_MSG_HW, "write 0x%08x to IGU(via GRC) addr 0x%x\n",
 			 data, igu_addr_data);
 	REG_WR(bp, igu_addr_data, data);
-	mmiowb();
 	barrier();
 	DP(NETIF_MSG_HW, "write 0x%08x to IGU(via GRC) addr 0x%x\n",
 			  ctl, igu_addr_ctl);
 	REG_WR(bp, igu_addr_ctl, ctl);
-	mmiowb();
 	barrier();
 
 	/* wait for clean up to finish */
@@ -9360,10 +9341,16 @@ void bnx2x_chip_cleanup(struct bnx2x *bp, int unload_mode, bool keep_link)
 		BNX2X_ERR("Failed to schedule DEL commands for UC MACs list: %d\n",
 			  rc);
 
-	/* Remove all currently configured VLANs */
-	rc = bnx2x_del_all_vlans(bp);
-	if (rc < 0)
-		BNX2X_ERR("Failed to delete all VLANs\n");
+	/* The whole *vlan_obj structure may be not initialized if VLAN
+	 * filtering offload is not supported by hardware. Currently this is
+	 * true for all hardware covered by CHIP_IS_E1x().
+	 */
+	if (!CHIP_IS_E1x(bp)) {
+		/* Remove all currently configured VLANs */
+		rc = bnx2x_del_all_vlans(bp);
+		if (rc < 0)
+			BNX2X_ERR("Failed to delete all VLANs\n");
+	}
 
 	/* Disable LLH */
 	if (!CHIP_IS_E1(bp))
@@ -9544,7 +9531,6 @@ static void bnx2x_set_234_gates(struct bnx2x *bp, bool close)
 
 	DP(NETIF_MSG_HW | NETIF_MSG_IFUP, "%s gates #2, #3 and #4\n",
 		close ? "closing" : "opening");
-	mmiowb();
 }
 
 #define SHARED_MF_CLP_MAGIC  0x80000000 /* `magic' bit */
@@ -9668,7 +9654,6 @@ static void bnx2x_pxp_prep(struct bnx2x *bp)
 	if (!CHIP_IS_E1(bp)) {
 		REG_WR(bp, PXP2_REG_RD_START_INIT, 0);
 		REG_WR(bp, PXP2_REG_RQ_RBC_DONE, 0);
-		mmiowb();
 	}
 }
 
@@ -9768,16 +9753,13 @@ static void bnx2x_process_kill_chip_reset(struct bnx2x *bp, bool global)
 	       reset_mask1 & (~not_reset_mask1));
 
 	barrier();
-	mmiowb();
 
 	REG_WR(bp, GRCBASE_MISC + MISC_REGISTERS_RESET_REG_2_SET,
 	       reset_mask2 & (~stay_reset2));
 
 	barrier();
-	mmiowb();
 
 	REG_WR(bp, GRCBASE_MISC + MISC_REGISTERS_RESET_REG_1_SET, reset_mask1);
-	mmiowb();
 }
 
 /**
@@ -9860,9 +9842,6 @@ static int bnx2x_process_kill(struct bnx2x *bp, bool global)
 	/* Clear "unprepared" bit */
 	REG_WR(bp, MISC_REG_UNPREPARED, 0);
 	barrier();
-
-	/* Make sure all is written to the chip before the reset */
-	mmiowb();
 
 	/* Wait for 1ms to empty GLUE and PCI-E core queues,
 	 * PSWHST, GRC and PSWRD Tetris buffer.
@@ -11292,7 +11271,7 @@ static void bnx2x_link_settings_supported(struct bnx2x *bp, u32 switch_cfg)
 			   dev_info.port_hw_config[port].external_phy_config),
 			   SHMEM_RD(bp,
 			   dev_info.port_hw_config[port].external_phy_config2));
-			return;
+		return;
 	}
 
 	if (CHIP_IS_E3(bp))
@@ -11992,7 +11971,7 @@ static void validate_set_si_mode(struct bnx2x *bp)
 static int bnx2x_get_hwinfo(struct bnx2x *bp)
 {
 	int /*abs*/func = BP_ABS_FUNC(bp);
-	int vn, mfw_vn;
+	int vn;
 	u32 val = 0, val2 = 0;
 	int rc = 0;
 
@@ -12077,12 +12056,10 @@ static int bnx2x_get_hwinfo(struct bnx2x *bp)
 	/*
 	 * Initialize MF configuration
 	 */
-
 	bp->mf_ov = 0;
 	bp->mf_mode = 0;
 	bp->mf_sub_mode = 0;
 	vn = BP_VN(bp);
-	mfw_vn = BP_FW_MB_IDX(bp);
 
 	if (!CHIP_IS_E1(bp) && !BP_NOMCP(bp)) {
 		BNX2X_DEV_INFO("shmem2base 0x%x, size %d, mfcfg offset %d\n",
@@ -14824,7 +14801,6 @@ static int bnx2x_drv_ctl(struct net_device *dev, struct drv_ctl_info *ctl)
 		if (rc)
 			break;
 
-		mmiowb();
 		barrier();
 
 		/* Start accepting on iSCSI L2 ring */
@@ -14859,7 +14835,6 @@ static int bnx2x_drv_ctl(struct net_device *dev, struct drv_ctl_info *ctl)
 		if (!bnx2x_wait_sp_comp(bp, sp_bits))
 			BNX2X_ERR("rx_mode completion timed out!\n");
 
-		mmiowb();
 		barrier();
 
 		/* Unset iSCSI L2 MAC */
@@ -15239,11 +15214,24 @@ static void bnx2x_ptp_task(struct work_struct *work)
 	u32 val_seq;
 	u64 timestamp, ns;
 	struct skb_shared_hwtstamps shhwtstamps;
+	bool bail = true;
+	int i;
 
-	/* Read Tx timestamp registers */
-	val_seq = REG_RD(bp, port ? NIG_REG_P1_TLLH_PTP_BUF_SEQID :
-			 NIG_REG_P0_TLLH_PTP_BUF_SEQID);
-	if (val_seq & 0x10000) {
+	/* FW may take a while to complete timestamping; try a bit and if it's
+	 * still not complete, may indicate an error state - bail out then.
+	 */
+	for (i = 0; i < 10; i++) {
+		/* Read Tx timestamp registers */
+		val_seq = REG_RD(bp, port ? NIG_REG_P1_TLLH_PTP_BUF_SEQID :
+				 NIG_REG_P0_TLLH_PTP_BUF_SEQID);
+		if (val_seq & 0x10000) {
+			bail = false;
+			break;
+		}
+		msleep(1 << i);
+	}
+
+	if (!bail) {
 		/* There is a valid timestamp value */
 		timestamp = REG_RD(bp, port ? NIG_REG_P1_TLLH_PTP_BUF_TS_MSB :
 				   NIG_REG_P0_TLLH_PTP_BUF_TS_MSB);
@@ -15258,16 +15246,18 @@ static void bnx2x_ptp_task(struct work_struct *work)
 		memset(&shhwtstamps, 0, sizeof(shhwtstamps));
 		shhwtstamps.hwtstamp = ns_to_ktime(ns);
 		skb_tstamp_tx(bp->ptp_tx_skb, &shhwtstamps);
-		dev_kfree_skb_any(bp->ptp_tx_skb);
-		bp->ptp_tx_skb = NULL;
 
 		DP(BNX2X_MSG_PTP, "Tx timestamp, timestamp cycles = %llu, ns = %llu\n",
 		   timestamp, ns);
 	} else {
-		DP(BNX2X_MSG_PTP, "There is no valid Tx timestamp yet\n");
-		/* Reschedule to keep checking for a valid timestamp value */
-		schedule_work(&bp->ptp_task);
+		DP(BNX2X_MSG_PTP,
+		   "Tx timestamp is not recorded (register read=%u)\n",
+		   val_seq);
+		bp->eth_stats.ptp_skip_tx_ts++;
 	}
+
+	dev_kfree_skb_any(bp->ptp_tx_skb);
+	bp->ptp_tx_skb = NULL;
 }
 
 void bnx2x_set_rx_ts(struct bnx2x *bp, struct sk_buff *skb)
@@ -15372,27 +15362,47 @@ static int bnx2x_enable_ptp_packets(struct bnx2x *bp)
 	return 0;
 }
 
+#define BNX2X_P2P_DETECT_PARAM_MASK 0x5F5
+#define BNX2X_P2P_DETECT_RULE_MASK 0x3DBB
+#define BNX2X_PTP_TX_ON_PARAM_MASK (BNX2X_P2P_DETECT_PARAM_MASK & 0x6AA)
+#define BNX2X_PTP_TX_ON_RULE_MASK (BNX2X_P2P_DETECT_RULE_MASK & 0x3EEE)
+#define BNX2X_PTP_V1_L4_PARAM_MASK (BNX2X_P2P_DETECT_PARAM_MASK & 0x7EE)
+#define BNX2X_PTP_V1_L4_RULE_MASK (BNX2X_P2P_DETECT_RULE_MASK & 0x3FFE)
+#define BNX2X_PTP_V2_L4_PARAM_MASK (BNX2X_P2P_DETECT_PARAM_MASK & 0x7EA)
+#define BNX2X_PTP_V2_L4_RULE_MASK (BNX2X_P2P_DETECT_RULE_MASK & 0x3FEE)
+#define BNX2X_PTP_V2_L2_PARAM_MASK (BNX2X_P2P_DETECT_PARAM_MASK & 0x6BF)
+#define BNX2X_PTP_V2_L2_RULE_MASK (BNX2X_P2P_DETECT_RULE_MASK & 0x3EFF)
+#define BNX2X_PTP_V2_PARAM_MASK (BNX2X_P2P_DETECT_PARAM_MASK & 0x6AA)
+#define BNX2X_PTP_V2_RULE_MASK (BNX2X_P2P_DETECT_RULE_MASK & 0x3EEE)
+
 int bnx2x_configure_ptp_filters(struct bnx2x *bp)
 {
 	int port = BP_PORT(bp);
+	u32 param, rule;
 	int rc;
 
 	if (!bp->hwtstamp_ioctl_called)
 		return 0;
 
+	param = port ? NIG_REG_P1_TLLH_PTP_PARAM_MASK :
+		NIG_REG_P0_TLLH_PTP_PARAM_MASK;
+	rule = port ? NIG_REG_P1_TLLH_PTP_RULE_MASK :
+		NIG_REG_P0_TLLH_PTP_RULE_MASK;
 	switch (bp->tx_type) {
 	case HWTSTAMP_TX_ON:
 		bp->flags |= TX_TIMESTAMPING_EN;
-		REG_WR(bp, port ? NIG_REG_P1_TLLH_PTP_PARAM_MASK :
-		       NIG_REG_P0_TLLH_PTP_PARAM_MASK, 0x6AA);
-		REG_WR(bp, port ? NIG_REG_P1_TLLH_PTP_RULE_MASK :
-		       NIG_REG_P0_TLLH_PTP_RULE_MASK, 0x3EEE);
+		REG_WR(bp, param, BNX2X_PTP_TX_ON_PARAM_MASK);
+		REG_WR(bp, rule, BNX2X_PTP_TX_ON_RULE_MASK);
 		break;
 	case HWTSTAMP_TX_ONESTEP_SYNC:
 		BNX2X_ERR("One-step timestamping is not supported\n");
 		return -ERANGE;
 	}
 
+	param = port ? NIG_REG_P1_LLH_PTP_PARAM_MASK :
+		NIG_REG_P0_LLH_PTP_PARAM_MASK;
+	rule = port ? NIG_REG_P1_LLH_PTP_RULE_MASK :
+		NIG_REG_P0_LLH_PTP_RULE_MASK;
 	switch (bp->rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		break;
@@ -15406,30 +15416,24 @@ int bnx2x_configure_ptp_filters(struct bnx2x *bp)
 	case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
 		bp->rx_filter = HWTSTAMP_FILTER_PTP_V1_L4_EVENT;
 		/* Initialize PTP detection for UDP/IPv4 events */
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_PARAM_MASK :
-		       NIG_REG_P0_LLH_PTP_PARAM_MASK, 0x7EE);
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_RULE_MASK :
-		       NIG_REG_P0_LLH_PTP_RULE_MASK, 0x3FFE);
+		REG_WR(bp, param, BNX2X_PTP_V1_L4_PARAM_MASK);
+		REG_WR(bp, rule, BNX2X_PTP_V1_L4_RULE_MASK);
 		break;
 	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
 	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
 		bp->rx_filter = HWTSTAMP_FILTER_PTP_V2_L4_EVENT;
 		/* Initialize PTP detection for UDP/IPv4 or UDP/IPv6 events */
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_PARAM_MASK :
-		       NIG_REG_P0_LLH_PTP_PARAM_MASK, 0x7EA);
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_RULE_MASK :
-		       NIG_REG_P0_LLH_PTP_RULE_MASK, 0x3FEE);
+		REG_WR(bp, param, BNX2X_PTP_V2_L4_PARAM_MASK);
+		REG_WR(bp, rule, BNX2X_PTP_V2_L4_RULE_MASK);
 		break;
 	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
 	case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ:
 		bp->rx_filter = HWTSTAMP_FILTER_PTP_V2_L2_EVENT;
 		/* Initialize PTP detection L2 events */
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_PARAM_MASK :
-		       NIG_REG_P0_LLH_PTP_PARAM_MASK, 0x6BF);
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_RULE_MASK :
-		       NIG_REG_P0_LLH_PTP_RULE_MASK, 0x3EFF);
+		REG_WR(bp, param, BNX2X_PTP_V2_L2_PARAM_MASK);
+		REG_WR(bp, rule, BNX2X_PTP_V2_L2_RULE_MASK);
 
 		break;
 	case HWTSTAMP_FILTER_PTP_V2_EVENT:
@@ -15437,10 +15441,8 @@ int bnx2x_configure_ptp_filters(struct bnx2x *bp)
 	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
 		bp->rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
 		/* Initialize PTP detection L2, UDP/IPv4 or UDP/IPv6 events */
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_PARAM_MASK :
-		       NIG_REG_P0_LLH_PTP_PARAM_MASK, 0x6AA);
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_RULE_MASK :
-		       NIG_REG_P0_LLH_PTP_RULE_MASK, 0x3EEE);
+		REG_WR(bp, param, BNX2X_PTP_V2_PARAM_MASK);
+		REG_WR(bp, rule, BNX2X_PTP_V2_RULE_MASK);
 		break;
 	}
 

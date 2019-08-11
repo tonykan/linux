@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2016 Sigma Designs
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
  */
 
 #include <linux/io.h>
@@ -530,6 +527,7 @@ static int tango_attach_chip(struct nand_chip *chip)
 
 static const struct nand_controller_ops tango_controller_ops = {
 	.attach_chip = tango_attach_chip,
+	.setup_data_interface = tango_set_timings,
 };
 
 static int chip_init(struct device *dev, struct device_node *np)
@@ -567,10 +565,9 @@ static int chip_init(struct device *dev, struct device_node *np)
 	chip->legacy.read_byte = tango_read_byte;
 	chip->legacy.write_buf = tango_write_buf;
 	chip->legacy.read_buf = tango_read_buf;
-	chip->select_chip = tango_select_chip;
+	chip->legacy.select_chip = tango_select_chip;
 	chip->legacy.cmd_ctrl = tango_cmd_ctrl;
 	chip->legacy.dev_ready = tango_dev_ready;
-	chip->setup_data_interface = tango_set_timings;
 	chip->options = NAND_USE_BOUNCE_BUFFER |
 			NAND_NO_SUBPAGE_WRITE |
 			NAND_WAIT_TCCS;

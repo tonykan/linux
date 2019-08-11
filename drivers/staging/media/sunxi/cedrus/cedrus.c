@@ -40,6 +40,36 @@ static const struct cedrus_control cedrus_controls[] = {
 		.codec		= CEDRUS_CODEC_MPEG2,
 		.required	= false,
 	},
+	{
+		.id		= V4L2_CID_MPEG_VIDEO_H264_DECODE_PARAMS,
+		.elem_size	= sizeof(struct v4l2_ctrl_h264_decode_params),
+		.codec		= CEDRUS_CODEC_H264,
+		.required	= true,
+	},
+	{
+		.id		= V4L2_CID_MPEG_VIDEO_H264_SLICE_PARAMS,
+		.elem_size	= sizeof(struct v4l2_ctrl_h264_slice_params),
+		.codec		= CEDRUS_CODEC_H264,
+		.required	= true,
+	},
+	{
+		.id		= V4L2_CID_MPEG_VIDEO_H264_SPS,
+		.elem_size	= sizeof(struct v4l2_ctrl_h264_sps),
+		.codec		= CEDRUS_CODEC_H264,
+		.required	= true,
+	},
+	{
+		.id		= V4L2_CID_MPEG_VIDEO_H264_PPS,
+		.elem_size	= sizeof(struct v4l2_ctrl_h264_pps),
+		.codec		= CEDRUS_CODEC_H264,
+		.required	= true,
+	},
+	{
+		.id		= V4L2_CID_MPEG_VIDEO_H264_SCALING_MATRIX,
+		.elem_size	= sizeof(struct v4l2_ctrl_h264_scaling_matrix),
+		.codec		= CEDRUS_CODEC_H264,
+		.required	= true,
+	},
 };
 
 #define CEDRUS_CONTROLS_COUNT	ARRAY_SIZE(cedrus_controls)
@@ -72,10 +102,11 @@ static int cedrus_init_ctrls(struct cedrus_dev *dev, struct cedrus_ctx *ctx)
 	ctrl_size = sizeof(ctrl) * CEDRUS_CONTROLS_COUNT + 1;
 
 	ctx->ctrls = kzalloc(ctrl_size, GFP_KERNEL);
-	memset(ctx->ctrls, 0, ctrl_size);
+	if (!ctx->ctrls)
+		return -ENOMEM;
 
 	for (i = 0; i < CEDRUS_CONTROLS_COUNT; i++) {
-		struct v4l2_ctrl_config cfg = { 0 };
+		struct v4l2_ctrl_config cfg = {};
 
 		cfg.elem_size = cedrus_controls[i].elem_size;
 		cfg.id = cedrus_controls[i].id;
@@ -277,9 +308,9 @@ static int cedrus_probe(struct platform_device *pdev)
 	}
 
 	dev->dec_ops[CEDRUS_CODEC_MPEG2] = &cedrus_dec_ops_mpeg2;
+	dev->dec_ops[CEDRUS_CODEC_H264] = &cedrus_dec_ops_h264;
 
 	mutex_init(&dev->dev_mutex);
-	spin_lock_init(&dev->irq_lock);
 
 	ret = v4l2_device_register(&pdev->dev, &dev->v4l2_dev);
 	if (ret) {
@@ -300,7 +331,7 @@ static int cedrus_probe(struct platform_device *pdev)
 			 "Failed to initialize V4L2 M2M device\n");
 		ret = PTR_ERR(dev->m2m_dev);
 
-		goto err_video;
+		goto err_v4l2;
 	}
 
 	dev->mdev.dev = &pdev->dev;
@@ -310,22 +341,22 @@ static int cedrus_probe(struct platform_device *pdev)
 	dev->mdev.ops = &cedrus_m2m_media_ops;
 	dev->v4l2_dev.mdev = &dev->mdev;
 
+	ret = video_register_device(vfd, VFL_TYPE_GRABBER, 0);
+	if (ret) {
+		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
+		goto err_m2m;
+	}
+
+	v4l2_info(&dev->v4l2_dev,
+		  "Device registered as /dev/video%d\n", vfd->num);
+
 	ret = v4l2_m2m_register_media_controller(dev->m2m_dev, vfd,
 						 MEDIA_ENT_F_PROC_VIDEO_DECODER);
 	if (ret) {
 		v4l2_err(&dev->v4l2_dev,
 			 "Failed to initialize V4L2 M2M media controller\n");
-		goto err_m2m;
+		goto err_video;
 	}
-
-	ret = video_register_device(vfd, VFL_TYPE_GRABBER, 0);
-	if (ret) {
-		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
-		goto err_v4l2;
-	}
-
-	v4l2_info(&dev->v4l2_dev,
-		  "Device registered as /dev/video%d\n", vfd->num);
 
 	ret = media_device_register(&dev->mdev);
 	if (ret) {
@@ -339,10 +370,10 @@ static int cedrus_probe(struct platform_device *pdev)
 
 err_m2m_mc:
 	v4l2_m2m_unregister_media_controller(dev->m2m_dev);
-err_m2m:
-	v4l2_m2m_release(dev->m2m_dev);
 err_video:
 	video_unregister_device(&dev->vfd);
+err_m2m:
+	v4l2_m2m_release(dev->m2m_dev);
 err_v4l2:
 	v4l2_device_unregister(&dev->v4l2_dev);
 
@@ -369,23 +400,41 @@ static int cedrus_remove(struct platform_device *pdev)
 }
 
 static const struct cedrus_variant sun4i_a10_cedrus_variant = {
-	/* No particular capability. */
+	.mod_rate	= 320000000,
 };
 
 static const struct cedrus_variant sun5i_a13_cedrus_variant = {
-	/* No particular capability. */
+	.mod_rate	= 320000000,
 };
 
 static const struct cedrus_variant sun7i_a20_cedrus_variant = {
-	/* No particular capability. */
+	.mod_rate	= 320000000,
 };
 
 static const struct cedrus_variant sun8i_a33_cedrus_variant = {
 	.capabilities	= CEDRUS_CAPABILITY_UNTILED,
+	.mod_rate	= 320000000,
 };
 
 static const struct cedrus_variant sun8i_h3_cedrus_variant = {
 	.capabilities	= CEDRUS_CAPABILITY_UNTILED,
+	.mod_rate	= 402000000,
+};
+
+static const struct cedrus_variant sun50i_a64_cedrus_variant = {
+	.capabilities	= CEDRUS_CAPABILITY_UNTILED,
+	.mod_rate	= 402000000,
+};
+
+static const struct cedrus_variant sun50i_h5_cedrus_variant = {
+	.capabilities	= CEDRUS_CAPABILITY_UNTILED,
+	.mod_rate	= 402000000,
+};
+
+static const struct cedrus_variant sun50i_h6_cedrus_variant = {
+	.capabilities	= CEDRUS_CAPABILITY_UNTILED,
+	.quirks		= CEDRUS_QUIRK_NO_DMA_OFFSET,
+	.mod_rate	= 600000000,
 };
 
 static const struct of_device_id cedrus_dt_match[] = {
@@ -409,6 +458,18 @@ static const struct of_device_id cedrus_dt_match[] = {
 		.compatible = "allwinner,sun8i-h3-video-engine",
 		.data = &sun8i_h3_cedrus_variant,
 	},
+	{
+		.compatible = "allwinner,sun50i-a64-video-engine",
+		.data = &sun50i_a64_cedrus_variant,
+	},
+	{
+		.compatible = "allwinner,sun50i-h5-video-engine",
+		.data = &sun50i_h5_cedrus_variant,
+	},
+	{
+		.compatible = "allwinner,sun50i-h6-video-engine",
+		.data = &sun50i_h6_cedrus_variant,
+	},
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, cedrus_dt_match);
@@ -418,7 +479,6 @@ static struct platform_driver cedrus_driver = {
 	.remove		= cedrus_remove,
 	.driver		= {
 		.name		= CEDRUS_NAME,
-		.owner		= THIS_MODULE,
 		.of_match_table	= of_match_ptr(cedrus_dt_match),
 	},
 };

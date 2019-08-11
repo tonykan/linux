@@ -44,9 +44,9 @@
 
 #define DESC_SKCIPHER_BASE		(3 * CAAM_CMD_SZ)
 #define DESC_SKCIPHER_ENC_LEN		(DESC_SKCIPHER_BASE + \
-					 20 * CAAM_CMD_SZ)
+					 21 * CAAM_CMD_SZ)
 #define DESC_SKCIPHER_DEC_LEN		(DESC_SKCIPHER_BASE + \
-					 15 * CAAM_CMD_SZ)
+					 16 * CAAM_CMD_SZ)
 
 void cnstr_shdsc_aead_null_encap(u32 * const desc, struct alginfo *adata,
 				 unsigned int icvsize, int era);
@@ -95,6 +95,11 @@ void cnstr_shdsc_rfc4543_encap(u32 * const desc, struct alginfo *cdata,
 void cnstr_shdsc_rfc4543_decap(u32 * const desc, struct alginfo *cdata,
 			       unsigned int ivsize, unsigned int icvsize,
 			       const bool is_qi);
+
+void cnstr_shdsc_chachapoly(u32 * const desc, struct alginfo *cdata,
+			    struct alginfo *adata, unsigned int ivsize,
+			    unsigned int icvsize, const bool encap,
+			    const bool is_qi);
 
 void cnstr_shdsc_skcipher_encap(u32 * const desc, struct alginfo *cdata,
 				unsigned int ivsize, const bool is_rfc3686,

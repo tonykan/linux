@@ -10,7 +10,7 @@
  *	Copyright (C) 2002
  *	    Kuba Ober (kuba@mareimbrium.org)
  *
- * See Documentation/usb/usb-serial.txt for more information on using this
+ * See Documentation/usb/usb-serial.rst for more information on using this
  * driver
  *
  * See http://ftdi-usb-sio.sourceforge.net for up to date testing info
@@ -609,6 +609,8 @@ static const struct usb_device_id id_table_combined[] = {
 		.driver_info = (kernel_ulong_t)&ftdi_jtag_quirk },
 	{ USB_DEVICE(FTDI_VID, FTDI_NT_ORIONLXM_PID),
 		.driver_info = (kernel_ulong_t)&ftdi_jtag_quirk },
+	{ USB_DEVICE(FTDI_VID, FTDI_NT_ORIONLX_PLUS_PID) },
+	{ USB_DEVICE(FTDI_VID, FTDI_NT_ORION_IO_PID) },
 	{ USB_DEVICE(FTDI_VID, FTDI_SYNAPSE_SS200_PID) },
 	{ USB_DEVICE(FTDI_VID, FTDI_CUSTOMWARE_MINIPLEX_PID) },
 	{ USB_DEVICE(FTDI_VID, FTDI_CUSTOMWARE_MINIPLEX2_PID) },
@@ -1025,6 +1027,9 @@ static const struct usb_device_id id_table_combined[] = {
 	{ USB_DEVICE(CYPRESS_VID, CYPRESS_WICED_BT_USB_PID) },
 	{ USB_DEVICE(CYPRESS_VID, CYPRESS_WICED_WL_USB_PID) },
 	{ USB_DEVICE(AIRBUS_DS_VID, AIRBUS_DS_P8GR) },
+	/* EZPrototypes devices */
+	{ USB_DEVICE(EZPROTOTYPES_VID, HJELMSLUND_USB485_ISO_PID) },
+	{ USB_DEVICE_INTERFACE_NUMBER(UNJO_VID, UNJO_ISODEBUG_V1_PID, 1) },
 	{ }					/* Terminating entry */
 };
 
@@ -1130,7 +1135,7 @@ static unsigned short int ftdi_232am_baud_base_to_divisor(int baud, int base)
 {
 	unsigned short int divisor;
 	/* divisor shifted 3 bits to the left */
-	int divisor3 = base / 2 / baud;
+	int divisor3 = DIV_ROUND_CLOSEST(base, 2 * baud);
 	if ((divisor3 & 0x7) == 7)
 		divisor3++; /* round x.7/8 up to x+1 */
 	divisor = divisor3 >> 3;
@@ -1156,7 +1161,7 @@ static u32 ftdi_232bm_baud_base_to_divisor(int baud, int base)
 	static const unsigned char divfrac[8] = { 0, 3, 2, 4, 1, 5, 6, 7 };
 	u32 divisor;
 	/* divisor shifted 3 bits to the left */
-	int divisor3 = base / 2 / baud;
+	int divisor3 = DIV_ROUND_CLOSEST(base, 2 * baud);
 	divisor = divisor3 >> 3;
 	divisor |= (u32)divfrac[divisor3 & 0x7] << 14;
 	/* Deal with special cases for highest baud rates. */
@@ -1179,7 +1184,7 @@ static u32 ftdi_2232h_baud_base_to_divisor(int baud, int base)
 	int divisor3;
 
 	/* hi-speed baud rate is 10-bit sampling instead of 16-bit */
-	divisor3 = base * 8 / (baud * 10);
+	divisor3 = DIV_ROUND_CLOSEST(8 * base, 10 * baud);
 
 	divisor = divisor3 >> 3;
 	divisor |= (u32)divfrac[divisor3 & 0x7] << 14;
@@ -1783,6 +1788,10 @@ static int ftdi_set_bitmode(struct usb_serial_port *port, u8 mode)
 	int result;
 	u16 val;
 
+	result = usb_autopm_get_interface(serial->interface);
+	if (result)
+		return result;
+
 	val = (mode << 8) | (priv->gpio_output << 4) | priv->gpio_value;
 	result = usb_control_msg(serial->dev,
 				 usb_sndctrlpipe(serial->dev, 0),
@@ -1794,6 +1803,8 @@ static int ftdi_set_bitmode(struct usb_serial_port *port, u8 mode)
 			"bitmode request failed for value 0x%04x: %d\n",
 			val, result);
 	}
+
+	usb_autopm_put_interface(serial->interface);
 
 	return result;
 }
@@ -1846,9 +1857,15 @@ static int ftdi_read_cbus_pins(struct usb_serial_port *port)
 	unsigned char *buf;
 	int result;
 
+	result = usb_autopm_get_interface(serial->interface);
+	if (result)
+		return result;
+
 	buf = kmalloc(1, GFP_KERNEL);
-	if (!buf)
+	if (!buf) {
+		usb_autopm_put_interface(serial->interface);
 		return -ENOMEM;
+	}
 
 	result = usb_control_msg(serial->dev,
 				 usb_rcvctrlpipe(serial->dev, 0),
@@ -1863,6 +1880,7 @@ static int ftdi_read_cbus_pins(struct usb_serial_port *port)
 	}
 
 	kfree(buf);
+	usb_autopm_put_interface(serial->interface);
 
 	return result;
 }

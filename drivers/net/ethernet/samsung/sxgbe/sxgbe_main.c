@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* 10G controller driver for Samsung SoCs
  *
  * Copyright (C) 2013 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
  *
  * Author: Siva Reddy Kallam <siva.kallam@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -400,9 +397,9 @@ static int init_tx_ring(struct device *dev, u8 queue_no,
 	}
 
 	/* allocate memory for TX descriptors */
-	tx_ring->dma_tx = dma_zalloc_coherent(dev,
-					      tx_rsize * sizeof(struct sxgbe_tx_norm_desc),
-					      &tx_ring->dma_tx_phy, GFP_KERNEL);
+	tx_ring->dma_tx = dma_alloc_coherent(dev,
+					     tx_rsize * sizeof(struct sxgbe_tx_norm_desc),
+					     &tx_ring->dma_tx_phy, GFP_KERNEL);
 	if (!tx_ring->dma_tx)
 		return -ENOMEM;
 
@@ -479,9 +476,9 @@ static int init_rx_ring(struct net_device *dev, u8 queue_no,
 	rx_ring->queue_no = queue_no;
 
 	/* allocate memory for RX descriptors */
-	rx_ring->dma_rx = dma_zalloc_coherent(priv->device,
-					      rx_rsize * sizeof(struct sxgbe_rx_norm_desc),
-					      &rx_ring->dma_rx_phy, GFP_KERNEL);
+	rx_ring->dma_rx = dma_alloc_coherent(priv->device,
+					     rx_rsize * sizeof(struct sxgbe_rx_norm_desc),
+					     &rx_ring->dma_rx_phy, GFP_KERNEL);
 
 	if (rx_ring->dma_rx == NULL)
 		return -ENOMEM;

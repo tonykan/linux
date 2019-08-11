@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * AHCI SATA platform library
  *
@@ -5,11 +6,6 @@
  *   Jeff Garzik <jgarzik@pobox.com>
  * Copyright 2010  MontaVista Software, LLC.
  *   Anton Vorontsov <avorontsov@ru.mvista.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
  */
 
 #include <linux/clk.h>
@@ -55,6 +51,12 @@ static int ahci_platform_enable_phys(struct ahci_host_priv *hpriv)
 		rc = phy_init(hpriv->phys[i]);
 		if (rc)
 			goto disable_phys;
+
+		rc = phy_set_mode(hpriv->phys[i], PHY_MODE_SATA);
+		if (rc) {
+			phy_exit(hpriv->phys[i]);
+			goto disable_phys;
+		}
 
 		rc = phy_power_on(hpriv->phys[i]);
 		if (rc) {
@@ -336,6 +338,9 @@ static int ahci_platform_get_phy(struct ahci_host_priv *hpriv, u32 port,
 		hpriv->phys[port] = NULL;
 		rc = 0;
 		break;
+	case -EPROBE_DEFER:
+		/* Do not complain yet */
+		break;
 
 	default:
 		dev_err(dev,
@@ -406,7 +411,6 @@ struct ahci_host_priv *ahci_platform_get_resources(struct platform_device *pdev,
 	hpriv->mmio = devm_ioremap_resource(dev,
 			      platform_get_resource(pdev, IORESOURCE_MEM, 0));
 	if (IS_ERR(hpriv->mmio)) {
-		dev_err(dev, "no mmio space\n");
 		rc = PTR_ERR(hpriv->mmio);
 		goto err_out;
 	}
@@ -738,6 +742,9 @@ int ahci_platform_suspend_host(struct device *dev)
 	writel(ctl, mmio + HOST_CTL);
 	readl(mmio + HOST_CTL); /* flush */
 
+	if (hpriv->flags & AHCI_HFLAG_SUSPEND_PHYS)
+		ahci_platform_disable_phys(hpriv);
+
 	return ata_host_suspend(host, PMSG_SUSPEND);
 }
 EXPORT_SYMBOL_GPL(ahci_platform_suspend_host);
@@ -756,6 +763,7 @@ EXPORT_SYMBOL_GPL(ahci_platform_suspend_host);
 int ahci_platform_resume_host(struct device *dev)
 {
 	struct ata_host *host = dev_get_drvdata(dev);
+	struct ahci_host_priv *hpriv = host->private_data;
 	int rc;
 
 	if (dev->power.power_state.event == PM_EVENT_SUSPEND) {
@@ -765,6 +773,9 @@ int ahci_platform_resume_host(struct device *dev)
 
 		ahci_init_controller(host);
 	}
+
+	if (hpriv->flags & AHCI_HFLAG_SUSPEND_PHYS)
+		ahci_platform_enable_phys(hpriv);
 
 	ata_host_resume(host);
 

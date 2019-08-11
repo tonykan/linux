@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Cryptographic API.
  *
@@ -6,11 +7,6 @@
  * Copyright (c) 2010 Nokia Corporation
  * Author: Dmitry Kasatkin <dmitry.kasatkin@nokia.com>
  * Copyright (c) 2011 Texas Instruments Incorporated
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
- *
  */
 
 #define pr_fmt(fmt) "%20s: " fmt, __func__
@@ -749,7 +745,6 @@ static struct crypto_alg algs_ctr[] = {
 	.cra_u.ablkcipher = {
 		.min_keysize	= AES_MIN_KEY_SIZE,
 		.max_keysize	= AES_MAX_KEY_SIZE,
-		.geniv		= "eseqiv",
 		.ivsize		= AES_BLOCK_SIZE,
 		.setkey		= omap_aes_setkey,
 		.encrypt	= omap_aes_ctr_encrypt,
@@ -1222,7 +1217,6 @@ static int omap_aes_probe(struct platform_device *pdev)
 				algp = &dd->pdata->algs_info[i].algs_list[j];
 
 				pr_debug("reg alg: %s\n", algp->cra_name);
-				INIT_LIST_HEAD(&algp->cra_list);
 
 				err = crypto_register_alg(algp);
 				if (err)
@@ -1240,7 +1234,6 @@ static int omap_aes_probe(struct platform_device *pdev)
 			algp = &aalg->base;
 
 			pr_debug("reg alg: %s\n", algp->cra_name);
-			INIT_LIST_HEAD(&algp->cra_list);
 
 			err = crypto_register_aead(aalg);
 			if (err)

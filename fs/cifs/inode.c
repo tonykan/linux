@@ -333,7 +333,7 @@ cifs_create_dfs_fattr(struct cifs_fattr *fattr, struct super_block *sb)
 	fattr->cf_mtime = timespec64_trunc(fattr->cf_mtime, sb->s_time_gran);
 	fattr->cf_atime = fattr->cf_ctime = fattr->cf_mtime;
 	fattr->cf_nlink = 2;
-	fattr->cf_flags |= CIFS_FATTR_DFS_REFERRAL;
+	fattr->cf_flags = CIFS_FATTR_DFS_REFERRAL;
 }
 
 static int
@@ -730,7 +730,6 @@ cifs_get_inode_info(struct inode **inode, const char *full_path,
 		    FILE_ALL_INFO *data, struct super_block *sb, int xid,
 		    const struct cifs_fid *fid)
 {
-	bool validinum = false;
 	__u16 srchflgs;
 	int rc = 0, tmprc = ENOSYS;
 	struct cifs_tcon *tcon;
@@ -821,7 +820,6 @@ cifs_get_inode_info(struct inode **inode, const char *full_path,
 			(FILE_DIRECTORY_INFO *)data, cifs_sb);
 			fattr.cf_uniqueid = le64_to_cpu(
 			((SEARCH_ID_FULL_DIR_INFO *)data)->UniqueId);
-			validinum = true;
 
 			cifs_buf_release(srchinf->ntwrk_buf_start);
 		}
@@ -840,31 +838,29 @@ cifs_get_inode_info(struct inode **inode, const char *full_path,
 	 */
 	if (*inode == NULL) {
 		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM) {
-			if (validinum == false) {
-				if (server->ops->get_srv_inum)
-					tmprc = server->ops->get_srv_inum(xid,
-						tcon, cifs_sb, full_path,
-						&fattr.cf_uniqueid, data);
-				if (tmprc) {
-					cifs_dbg(FYI, "GetSrvInodeNum rc %d\n",
-						 tmprc);
-					fattr.cf_uniqueid = iunique(sb, ROOT_I);
-					cifs_autodisable_serverino(cifs_sb);
-				} else if ((fattr.cf_uniqueid == 0) &&
-						strlen(full_path) == 0) {
-					/* some servers ret bad root ino ie 0 */
-					cifs_dbg(FYI, "Invalid (0) inodenum\n");
-					fattr.cf_flags |=
-						CIFS_FATTR_FAKE_ROOT_INO;
-					fattr.cf_uniqueid =
-						simple_hashstr(tcon->treeName);
-				}
+			if (server->ops->get_srv_inum)
+				tmprc = server->ops->get_srv_inum(xid,
+								  tcon, cifs_sb, full_path,
+								  &fattr.cf_uniqueid, data);
+			if (tmprc) {
+				cifs_dbg(FYI, "GetSrvInodeNum rc %d\n",
+					 tmprc);
+				fattr.cf_uniqueid = iunique(sb, ROOT_I);
+				cifs_autodisable_serverino(cifs_sb);
+			} else if ((fattr.cf_uniqueid == 0) &&
+				   strlen(full_path) == 0) {
+				/* some servers ret bad root ino ie 0 */
+				cifs_dbg(FYI, "Invalid (0) inodenum\n");
+				fattr.cf_flags |=
+					CIFS_FATTR_FAKE_ROOT_INO;
+				fattr.cf_uniqueid =
+					simple_hashstr(tcon->treeName);
 			}
 		} else
 			fattr.cf_uniqueid = iunique(sb, ROOT_I);
 	} else {
-		if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM) &&
-		    validinum == false && server->ops->get_srv_inum) {
+		if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM)
+		    && server->ops->get_srv_inum) {
 			/*
 			 * Pass a NULL tcon to ensure we don't make a round
 			 * trip to the server. This only works for SMB2+.
@@ -896,7 +892,6 @@ cifs_get_inode_info(struct inode **inode, const char *full_path,
 			cifs_dbg(FYI, "cifs_sfu_type failed: %d\n", tmprc);
 	}
 
-#ifdef CONFIG_CIFS_ACL
 	/* fill in 0777 bits from ACL */
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_CIFS_ACL) {
 		rc = cifs_acl_to_fattr(cifs_sb, &fattr, *inode, full_path, fid);
@@ -906,7 +901,6 @@ cifs_get_inode_info(struct inode **inode, const char *full_path,
 			goto cgii_exit;
 		}
 	}
-#endif /* CONFIG_CIFS_ACL */
 
 	/* fill in remaining high mode bits e.g. SUID, VTX */
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL)
@@ -1739,6 +1733,10 @@ cifs_do_rename(const unsigned int xid, struct dentry *from_dentry,
 	if (rc == 0 || rc != -EBUSY)
 		goto do_rename_exit;
 
+	/* Don't fall back to using SMB on SMB 2+ mount */
+	if (server->vals->protocol_id != 0)
+		goto do_rename_exit;
+
 	/* open-file renames don't work across directories */
 	if (to_dentry->d_parent != from_dentry->d_parent)
 		goto do_rename_exit;
@@ -2084,7 +2082,7 @@ int cifs_getattr(const struct path *path, struct kstat *stat,
 		return rc;
 
 	generic_fillattr(inode, stat);
-	stat->blksize = CIFS_MAX_MSGSIZE;
+	stat->blksize = cifs_sb->bsize;
 	stat->ino = CIFS_I(inode)->uniqueid;
 
 	/* old CIFS Unix Extensions doesn't return create time */
@@ -2114,6 +2112,43 @@ int cifs_getattr(const struct path *path, struct kstat *stat,
 			stat->gid = current_fsgid();
 	}
 	return rc;
+}
+
+int cifs_fiemap(struct inode *inode, struct fiemap_extent_info *fei, u64 start,
+		u64 len)
+{
+	struct cifsInodeInfo *cifs_i = CIFS_I(inode);
+	struct cifs_sb_info *cifs_sb = CIFS_SB(cifs_i->vfs_inode.i_sb);
+	struct cifs_tcon *tcon = cifs_sb_master_tcon(cifs_sb);
+	struct TCP_Server_Info *server = tcon->ses->server;
+	struct cifsFileInfo *cfile;
+	int rc;
+
+	/*
+	 * We need to be sure that all dirty pages are written as they
+	 * might fill holes on the server.
+	 */
+	if (!CIFS_CACHE_READ(CIFS_I(inode)) && inode->i_mapping &&
+	    inode->i_mapping->nrpages != 0) {
+		rc = filemap_fdatawait(inode->i_mapping);
+		if (rc) {
+			mapping_set_error(inode->i_mapping, rc);
+			return rc;
+		}
+	}
+
+	cfile = find_readable_file(cifs_i, false);
+	if (cfile == NULL)
+		return -EINVAL;
+
+	if (server->ops->fiemap) {
+		rc = server->ops->fiemap(tcon, cfile, fei, start, len);
+		cifsFileInfo_put(cfile);
+		return rc;
+	}
+
+	cifsFileInfo_put(cfile);
+	return -ENOTSUPP;
 }
 
 static int cifs_truncate_page(struct address_space *mapping, loff_t from)
@@ -2261,6 +2296,11 @@ cifs_setattr_unix(struct dentry *direntry, struct iattr *attrs)
 	 * the flush returns error?
 	 */
 	rc = filemap_write_and_wait(inode->i_mapping);
+	if (is_interrupt_error(rc)) {
+		rc = -ERESTARTSYS;
+		goto out;
+	}
+
 	mapping_set_error(inode->i_mapping, rc);
 	rc = 0;
 
@@ -2366,6 +2406,8 @@ cifs_setattr_nounix(struct dentry *direntry, struct iattr *attrs)
 	struct inode *inode = d_inode(direntry);
 	struct cifs_sb_info *cifs_sb = CIFS_SB(inode->i_sb);
 	struct cifsInodeInfo *cifsInode = CIFS_I(inode);
+	struct cifsFileInfo *wfile;
+	struct cifs_tcon *tcon;
 	char *full_path = NULL;
 	int rc = -EACCES;
 	__u32 dosattr = 0;
@@ -2373,7 +2415,7 @@ cifs_setattr_nounix(struct dentry *direntry, struct iattr *attrs)
 
 	xid = get_xid();
 
-	cifs_dbg(FYI, "setattr on file %pd attrs->iavalid 0x%x\n",
+	cifs_dbg(FYI, "setattr on file %pd attrs->ia_valid 0x%x\n",
 		 direntry, attrs->ia_valid);
 
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_PERM)
@@ -2404,8 +2446,27 @@ cifs_setattr_nounix(struct dentry *direntry, struct iattr *attrs)
 	 * the flush returns error?
 	 */
 	rc = filemap_write_and_wait(inode->i_mapping);
+	if (is_interrupt_error(rc)) {
+		rc = -ERESTARTSYS;
+		goto cifs_setattr_exit;
+	}
+
 	mapping_set_error(inode->i_mapping, rc);
 	rc = 0;
+
+	if (attrs->ia_valid & ATTR_MTIME) {
+		rc = cifs_get_writable_file(cifsInode, false, &wfile);
+		if (!rc) {
+			tcon = tlink_tcon(wfile->tlink);
+			rc = tcon->ses->server->ops->flush(xid, tcon, &wfile->fid);
+			cifsFileInfo_put(wfile);
+			if (rc)
+				return rc;
+		} else if (rc != -EBADF)
+			return rc;
+		else
+			rc = 0;
+	}
 
 	if (attrs->ia_valid & ATTR_SIZE) {
 		rc = cifs_set_file_size(inode, attrs, xid, full_path);
@@ -2419,7 +2480,6 @@ cifs_setattr_nounix(struct dentry *direntry, struct iattr *attrs)
 	if (attrs->ia_valid & ATTR_GID)
 		gid = attrs->ia_gid;
 
-#ifdef CONFIG_CIFS_ACL
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_CIFS_ACL) {
 		if (uid_valid(uid) || gid_valid(gid)) {
 			rc = id_mode_to_cifs_acl(inode, full_path, NO_CHANGE_64,
@@ -2431,7 +2491,6 @@ cifs_setattr_nounix(struct dentry *direntry, struct iattr *attrs)
 			}
 		}
 	} else
-#endif /* CONFIG_CIFS_ACL */
 	if (!(cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SET_UID))
 		attrs->ia_valid &= ~(ATTR_UID | ATTR_GID);
 
@@ -2442,7 +2501,6 @@ cifs_setattr_nounix(struct dentry *direntry, struct iattr *attrs)
 	if (attrs->ia_valid & ATTR_MODE) {
 		mode = attrs->ia_mode;
 		rc = 0;
-#ifdef CONFIG_CIFS_ACL
 		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_CIFS_ACL) {
 			rc = id_mode_to_cifs_acl(inode, full_path, mode,
 						INVALID_UID, INVALID_GID);
@@ -2452,7 +2510,6 @@ cifs_setattr_nounix(struct dentry *direntry, struct iattr *attrs)
 				goto cifs_setattr_exit;
 			}
 		} else
-#endif /* CONFIG_CIFS_ACL */
 		if (((mode & S_IWUGO) == 0) &&
 		    (cifsInode->cifsAttrs & ATTR_READONLY) == 0) {
 

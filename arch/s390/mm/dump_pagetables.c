@@ -111,11 +111,12 @@ static void note_page(struct seq_file *m, struct pg_state *st,
 }
 
 #ifdef CONFIG_KASAN
-static void note_kasan_zero_page(struct seq_file *m, struct pg_state *st)
+static void note_kasan_early_shadow_page(struct seq_file *m,
+						struct pg_state *st)
 {
 	unsigned int prot;
 
-	prot = pte_val(*kasan_zero_pte) &
+	prot = pte_val(*kasan_early_shadow_pte) &
 		(_PAGE_PROTECT | _PAGE_INVALID | _PAGE_NOEXEC);
 	note_page(m, st, prot, 4);
 }
@@ -154,15 +155,15 @@ static void walk_pmd_level(struct seq_file *m, struct pg_state *st,
 	int i;
 
 #ifdef CONFIG_KASAN
-	if ((pud_val(*pud) & PAGE_MASK) == __pa(kasan_zero_pmd)) {
-		note_kasan_zero_page(m, st);
+	if ((pud_val(*pud) & PAGE_MASK) == __pa(kasan_early_shadow_pmd)) {
+		note_kasan_early_shadow_page(m, st);
 		return;
 	}
 #endif
 
-	for (i = 0; i < PTRS_PER_PMD && addr < max_addr; i++) {
+	pmd = pmd_offset(pud, addr);
+	for (i = 0; i < PTRS_PER_PMD && addr < max_addr; i++, pmd++) {
 		st->current_address = addr;
-		pmd = pmd_offset(pud, addr);
 		if (!pmd_none(*pmd)) {
 			if (pmd_large(*pmd)) {
 				prot = pmd_val(*pmd) &
@@ -185,15 +186,15 @@ static void walk_pud_level(struct seq_file *m, struct pg_state *st,
 	int i;
 
 #ifdef CONFIG_KASAN
-	if ((p4d_val(*p4d) & PAGE_MASK) == __pa(kasan_zero_pud)) {
-		note_kasan_zero_page(m, st);
+	if ((p4d_val(*p4d) & PAGE_MASK) == __pa(kasan_early_shadow_pud)) {
+		note_kasan_early_shadow_page(m, st);
 		return;
 	}
 #endif
 
-	for (i = 0; i < PTRS_PER_PUD && addr < max_addr; i++) {
+	pud = pud_offset(p4d, addr);
+	for (i = 0; i < PTRS_PER_PUD && addr < max_addr; i++, pud++) {
 		st->current_address = addr;
-		pud = pud_offset(p4d, addr);
 		if (!pud_none(*pud))
 			if (pud_large(*pud)) {
 				prot = pud_val(*pud) &
@@ -215,15 +216,15 @@ static void walk_p4d_level(struct seq_file *m, struct pg_state *st,
 	int i;
 
 #ifdef CONFIG_KASAN
-	if ((pgd_val(*pgd) & PAGE_MASK) == __pa(kasan_zero_p4d)) {
-		note_kasan_zero_page(m, st);
+	if ((pgd_val(*pgd) & PAGE_MASK) == __pa(kasan_early_shadow_p4d)) {
+		note_kasan_early_shadow_page(m, st);
 		return;
 	}
 #endif
 
-	for (i = 0; i < PTRS_PER_P4D && addr < max_addr; i++) {
+	p4d = p4d_offset(pgd, addr);
+	for (i = 0; i < PTRS_PER_P4D && addr < max_addr; i++, p4d++) {
 		st->current_address = addr;
-		p4d = p4d_offset(pgd, addr);
 		if (!p4d_none(*p4d))
 			walk_pud_level(m, st, p4d, addr);
 		else

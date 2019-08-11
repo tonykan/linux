@@ -45,10 +45,7 @@ void __init bootmem_init(void)
 	 * If PHYS_OFFSET is zero reserve page at address 0:
 	 * successfull allocations should never return NULL.
 	 */
-	if (PHYS_OFFSET)
-		memblock_reserve(0, PHYS_OFFSET);
-	else
-		memblock_reserve(0, 1);
+	memblock_reserve(0, PHYS_OFFSET ? PHYS_OFFSET : 1);
 
 	early_init_fdt_scan_reserved_mem();
 
@@ -59,6 +56,9 @@ void __init bootmem_init(void)
 	min_low_pfn = max(min_low_pfn, PFN_UP(PHYS_OFFSET));
 	max_pfn = PFN_DOWN(memblock_end_of_DRAM());
 	max_low_pfn = min(max_pfn, MAX_LOW_PFN);
+
+	early_memtest((phys_addr_t)min_low_pfn << PAGE_SHIFT,
+		      (phys_addr_t)max_low_pfn << PAGE_SHIFT);
 
 	memblock_set_current_limit(PFN_PHYS(max_low_pfn));
 	dma_contiguous_reserve(PFN_PHYS(max_low_pfn));
@@ -212,11 +212,6 @@ void free_initrd_mem(unsigned long start, unsigned long end)
 		free_reserved_area((void *)start, (void *)end, -1, "initrd");
 }
 #endif
-
-void free_initmem(void)
-{
-	free_initmem_default(-1);
-}
 
 static void __init parse_memmap_one(char *p)
 {

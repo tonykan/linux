@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
+
 #ifndef _VKMS_DRV_H_
 #define _VKMS_DRV_H_
 
@@ -17,14 +19,6 @@
 #define YRES_MAX  8192
 
 extern bool enable_cursor;
-
-static const u32 vkms_formats[] = {
-	DRM_FORMAT_XRGB8888,
-};
-
-static const u32 vkms_cursor_formats[] = {
-	DRM_FORMAT_ARGB8888,
-};
 
 struct vkms_crc_data {
 	struct drm_framebuffer fb;
@@ -127,9 +121,6 @@ vm_fault_t vkms_gem_fault(struct vm_fault *vmf);
 int vkms_dumb_create(struct drm_file *file, struct drm_device *dev,
 		     struct drm_mode_create_dumb *args);
 
-int vkms_dumb_map(struct drm_file *file, struct drm_device *dev,
-		  u32 handle, u64 *offset);
-
 void vkms_gem_free_object(struct drm_gem_object *obj);
 
 int vkms_gem_vmap(struct drm_gem_object *obj);
@@ -137,6 +128,8 @@ int vkms_gem_vmap(struct drm_gem_object *obj);
 void vkms_gem_vunmap(struct drm_gem_object *obj);
 
 /* CRC Support */
+const char *const *vkms_get_crc_sources(struct drm_crtc *crtc,
+					size_t *count);
 int vkms_set_crc_source(struct drm_crtc *crtc, const char *src_name);
 int vkms_verify_crc_source(struct drm_crtc *crtc, const char *source_name,
 			   size_t *values_cnt);

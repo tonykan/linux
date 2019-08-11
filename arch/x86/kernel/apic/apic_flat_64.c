@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2004 James Cleverdon, IBM.
- * Subject to the GNU Public License, v.2
  *
  * Flat APIC subarch code.
  *
@@ -8,6 +8,7 @@
  * Martin Bligh, Andi Kleen, James Bottomley, John Stultz, and
  * James Cleverdon.
  */
+#include <linux/acpi.h>
 #include <linux/errno.h>
 #include <linux/threads.h>
 #include <linux/cpumask.h>
@@ -16,12 +17,12 @@
 #include <linux/ctype.h>
 #include <linux/hardirq.h>
 #include <linux/export.h>
-#include <asm/smp.h>
-#include <asm/apic.h>
-#include <asm/ipi.h>
-#include <asm/jailhouse_para.h>
 
-#include <linux/acpi.h>
+#include <asm/smp.h>
+#include <asm/ipi.h>
+#include <asm/apic.h>
+#include <asm/apic_flat_64.h>
+#include <asm/jailhouse_para.h>
 
 static struct apic apic_physflat;
 static struct apic apic_flat;
@@ -77,7 +78,7 @@ flat_send_IPI_mask_allbutself(const struct cpumask *cpumask, int vector)
 	int cpu = smp_processor_id();
 
 	if (cpu < BITS_PER_LONG)
-		clear_bit(cpu, &mask);
+		__clear_bit(cpu, &mask);
 
 	_flat_send_IPI_mask(mask, vector);
 }
@@ -91,7 +92,7 @@ static void flat_send_IPI_allbutself(int vector)
 			unsigned long mask = cpumask_bits(cpu_online_mask)[0];
 
 			if (cpu < BITS_PER_LONG)
-				clear_bit(cpu, &mask);
+				__clear_bit(cpu, &mask);
 
 			_flat_send_IPI_mask(mask, vector);
 		}

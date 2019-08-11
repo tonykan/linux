@@ -316,8 +316,8 @@ static int bnxt_hwrm_set_dcbx_app(struct bnxt *bp, struct dcb_app *app,
 
 	n = IEEE_8021QAZ_MAX_TCS;
 	data_len = sizeof(*data) + sizeof(*fw_app) * n;
-	data = dma_zalloc_coherent(&bp->pdev->dev, data_len, &mapping,
-				   GFP_KERNEL);
+	data = dma_alloc_coherent(&bp->pdev->dev, data_len, &mapping,
+				  GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -396,7 +396,7 @@ static int bnxt_hwrm_queue_dscp_qcaps(struct bnxt *bp)
 
 	bnxt_hwrm_cmd_hdr_init(bp, &req, HWRM_QUEUE_DSCP_QCAPS, -1, -1);
 	mutex_lock(&bp->hwrm_cmd_lock);
-	rc = _hwrm_send_message(bp, &req, sizeof(req), HWRM_CMD_TIMEOUT);
+	rc = _hwrm_send_message_silent(bp, &req, sizeof(req), HWRM_CMD_TIMEOUT);
 	if (!rc) {
 		bp->max_dscp_value = (1 << resp->num_dscp_bits) - 1;
 		if (bp->max_dscp_value < 0x3f)
@@ -471,7 +471,10 @@ static int bnxt_ets_validate(struct bnxt *bp, struct ieee_ets *ets, u8 *tc)
 	if (total_ets_bw > 100)
 		return -EINVAL;
 
-	*tc = max_tc + 1;
+	if (max_tc >= bp->max_tc)
+		*tc = bp->max_tc;
+	else
+		*tc = max_tc + 1;
 	return 0;
 }
 

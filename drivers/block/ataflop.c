@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  drivers/block/ataflop.c
  *
@@ -1471,6 +1472,15 @@ static void setup_req_params( int drive )
 			ReqTrack, ReqSector, (unsigned long)ReqData ));
 }
 
+static void ataflop_commit_rqs(struct blk_mq_hw_ctx *hctx)
+{
+	spin_lock_irq(&ataflop_lock);
+	atari_disable_irq(IRQ_MFP_FDC);
+	finish_fdc();
+	atari_enable_irq(IRQ_MFP_FDC);
+	spin_unlock_irq(&ataflop_lock);
+}
+
 static blk_status_t ataflop_queue_rq(struct blk_mq_hw_ctx *hctx,
 				     const struct blk_mq_queue_data *bd)
 {
@@ -1716,6 +1726,7 @@ static int fd_locked_ioctl(struct block_device *bdev, fmode_t mode,
 		/* MSch: invalidate default_params */
 		default_params[drive].blocks  = 0;
 		set_capacity(floppy->disk, MAX_DISK_SIZE * 2);
+		/* Fall through */
 	case FDFMTEND:
 	case FDFLUSH:
 		/* invalidate the buffer track to force a reread */
@@ -1947,6 +1958,7 @@ static const struct block_device_operations floppy_fops = {
 
 static const struct blk_mq_ops ataflop_mq_ops = {
 	.queue_rq = ataflop_queue_rq,
+	.commit_rqs = ataflop_commit_rqs,
 };
 
 static struct kobject *floppy_find(dev_t dev, int *part, void *data)
@@ -1982,6 +1994,7 @@ static int __init atari_floppy_init (void)
 							   &ataflop_mq_ops, 2,
 							   BLK_MQ_F_SHOULD_MERGE);
 		if (IS_ERR(unit[i].disk->queue)) {
+			put_disk(unit[i].disk);
 			ret = PTR_ERR(unit[i].disk->queue);
 			unit[i].disk->queue = NULL;
 			goto err;
@@ -2017,6 +2030,7 @@ static int __init atari_floppy_init (void)
 		unit[i].disk->first_minor = i;
 		sprintf(unit[i].disk->disk_name, "fd%d", i);
 		unit[i].disk->fops = &floppy_fops;
+		unit[i].disk->events = DISK_EVENT_MEDIA_CHANGE;
 		unit[i].disk->private_data = &unit[i];
 		set_capacity(unit[i].disk, MAX_DISK_SIZE * 2);
 		add_disk(unit[i].disk);
@@ -2033,18 +2047,13 @@ static int __init atari_floppy_init (void)
 	return 0;
 
 err:
-	do {
+	while (--i >= 0) {
 		struct gendisk *disk = unit[i].disk;
 
-		if (disk) {
-			if (disk->queue) {
-				blk_cleanup_queue(disk->queue);
-				disk->queue = NULL;
-			}
-			blk_mq_free_tag_set(&unit[i].tag_set);
-			put_disk(unit[i].disk);
-		}
-	} while (i--);
+		blk_cleanup_queue(disk->queue);
+		blk_mq_free_tag_set(&unit[i].tag_set);
+		put_disk(unit[i].disk);
+	}
 
 	unregister_blkdev(FLOPPY_MAJOR, "fd");
 	return ret;

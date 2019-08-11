@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * V4L2 asynchronous subdevice registration API
  *
  * Copyright (C) 2012-2013, Guennadi Liakhovetski <g.liakhovetski@gmx.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/device.h>
@@ -424,11 +421,7 @@ static int v4l2_async_notifier_asd_valid(struct v4l2_async_notifier *notifier,
 
 void v4l2_async_notifier_init(struct v4l2_async_notifier *notifier)
 {
-	mutex_lock(&list_lock);
-
 	INIT_LIST_HEAD(&notifier->asd_list);
-
-	mutex_unlock(&list_lock);
 }
 EXPORT_SYMBOL(v4l2_async_notifier_init);
 

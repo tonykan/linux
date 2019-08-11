@@ -50,6 +50,7 @@ check_setup()
 {
 	HAS_FW_LOADER_USER_HELPER="$(kconfig_has CONFIG_FW_LOADER_USER_HELPER=y)"
 	HAS_FW_LOADER_USER_HELPER_FALLBACK="$(kconfig_has CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y)"
+	HAS_FW_LOADER_COMPRESS="$(kconfig_has CONFIG_FW_LOADER_COMPRESS=y)"
 	PROC_FW_IGNORE_SYSFS_FALLBACK="0"
 	PROC_FW_FORCE_SYSFS_FALLBACK="0"
 
@@ -84,6 +85,12 @@ check_setup()
 	fi
 
 	OLD_FWPATH="$(cat /sys/module/firmware_class/parameters/path)"
+
+	if [ "$HAS_FW_LOADER_COMPRESS" = "yes" ]; then
+		if ! which xz 2> /dev/null > /dev/null; then
+			HAS_FW_LOADER_COMPRESS=""
+		fi
+	fi
 }
 
 verify_reqs()
@@ -91,7 +98,7 @@ verify_reqs()
 	if [ "$TEST_REQS_FW_SYSFS_FALLBACK" = "yes" ]; then
 		if [ ! "$HAS_FW_LOADER_USER_HELPER" = "yes" ]; then
 			echo "usermode helper disabled so ignoring test"
-			exit $ksft_skip
+			exit 0
 		fi
 	fi
 }

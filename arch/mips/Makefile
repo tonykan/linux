@@ -17,6 +17,7 @@ archscripts: scripts_basic
 	$(Q)$(MAKE) $(build)=arch/mips/boot/tools relocs
 
 KBUILD_DEFCONFIG := 32r2el_defconfig
+KBUILD_DTBS      := dtbs
 
 #
 # Select the object file format to substitute into the linker script.
@@ -233,6 +234,8 @@ toolchain-crc				:= $(call cc-option-yn,$(mips-cflags) -Wa$(comma)-mcrc)
 cflags-$(toolchain-crc)			+= -DTOOLCHAIN_SUPPORTS_CRC
 toolchain-dsp				:= $(call cc-option-yn,$(mips-cflags) -Wa$(comma)-mdsp)
 cflags-$(toolchain-dsp)			+= -DTOOLCHAIN_SUPPORTS_DSP
+toolchain-ginv				:= $(call cc-option-yn,$(mips-cflags) -Wa$(comma)-mginv)
+cflags-$(toolchain-ginv)		+= -DTOOLCHAIN_SUPPORTS_GINV
 
 #
 # Firmware support
@@ -319,7 +322,7 @@ OBJCOPYFLAGS		+= --remove-section=.reginfo
 head-y := arch/mips/kernel/head.o
 
 libs-y			+= arch/mips/lib/
-libs-y			+= arch/mips/math-emu/
+libs-$(CONFIG_MIPS_FP_SUPPORT) += arch/mips/math-emu/
 
 # See arch/mips/Kbuild for content of core part of the kernel
 core-y += arch/mips/
@@ -382,7 +385,7 @@ quiet_cmd_64 = OBJCOPY $@
 vmlinux.64: vmlinux
 	$(call cmd,64)
 
-all:	$(all-y)
+all:	$(all-y) $(KBUILD_DTBS)
 
 # boot
 $(boot-y): $(vmlinux-32) FORCE
@@ -429,6 +432,9 @@ archclean:
 	$(Q)$(MAKE) $(clean)=arch/mips/boot/compressed
 	$(Q)$(MAKE) $(clean)=arch/mips/boot/tools
 	$(Q)$(MAKE) $(clean)=arch/mips/lasat
+
+archheaders:
+	$(Q)$(MAKE) $(build)=arch/mips/kernel/syscalls all
 
 define archhelp
 	echo '  install              - install kernel into $(INSTALL_PATH)'

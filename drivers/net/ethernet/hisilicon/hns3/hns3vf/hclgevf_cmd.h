@@ -46,9 +46,17 @@ struct hclgevf_cmq_ring {
 
 enum hclgevf_cmd_return_status {
 	HCLGEVF_CMD_EXEC_SUCCESS	= 0,
-	HCLGEVF_CMD_NO_AUTH	= 1,
-	HCLGEVF_CMD_NOT_EXEC	= 2,
-	HCLGEVF_CMD_QUEUE_FULL	= 3,
+	HCLGEVF_CMD_NO_AUTH		= 1,
+	HCLGEVF_CMD_NOT_SUPPORTED	= 2,
+	HCLGEVF_CMD_QUEUE_FULL		= 3,
+	HCLGEVF_CMD_NEXT_ERR		= 4,
+	HCLGEVF_CMD_UNEXE_ERR		= 5,
+	HCLGEVF_CMD_PARA_ERR		= 6,
+	HCLGEVF_CMD_RESULT_ERR		= 7,
+	HCLGEVF_CMD_TIMEOUT		= 8,
+	HCLGEVF_CMD_HILINK_ERR		= 9,
+	HCLGEVF_CMD_QUEUE_ILLEGAL	= 10,
+	HCLGEVF_CMD_INVALID		= 11,
 };
 
 enum hclgevf_cmd_status {
@@ -87,6 +95,8 @@ enum hclgevf_opcode_type {
 	HCLGEVF_OPC_QUERY_TX_STATUS	= 0x0B03,
 	HCLGEVF_OPC_QUERY_RX_STATUS	= 0x0B13,
 	HCLGEVF_OPC_CFG_COM_TQP_QUEUE	= 0x0B20,
+	/* GRO command */
+	HCLGEVF_OPC_GRO_GENERIC_CONFIG  = 0x0C10,
 	/* RSS cmd */
 	HCLGEVF_OPC_RSS_GENERIC_CONFIG	= 0x0D01,
 	HCLGEVF_OPC_RSS_INPUT_TUPLE     = 0x0D02,
@@ -147,6 +157,12 @@ struct hclgevf_query_res_cmd {
 	__le16 msixcap_localid_ba_rocee;
 	__le16 vf_intr_vector_number;
 	__le16 rsv[7];
+};
+
+#define HCLGEVF_GRO_EN_B               0
+struct hclgevf_cfg_gro_status_cmd {
+	__le16 gro_en;
+	u8 rsv[22];
 };
 
 #define HCLGEVF_RSS_DEFAULT_OUTPORT_B	4
@@ -256,6 +272,7 @@ static inline u32 hclgevf_read_reg(u8 __iomem *base, u32 reg)
 
 int hclgevf_cmd_init(struct hclgevf_dev *hdev);
 void hclgevf_cmd_uninit(struct hclgevf_dev *hdev);
+int hclgevf_cmd_queue_init(struct hclgevf_dev *hdev);
 
 int hclgevf_cmd_send(struct hclgevf_hw *hw, struct hclgevf_desc *desc, int num);
 void hclgevf_cmd_setup_basic_desc(struct hclgevf_desc *desc,

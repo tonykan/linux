@@ -16,6 +16,7 @@
 #include "transaction.h"
 #include "sysfs.h"
 #include "volumes.h"
+#include "space-info.h"
 
 static inline struct btrfs_fs_info *to_fs_info(struct kobject *kobj);
 static inline struct btrfs_fs_devices *to_fs_devs(struct kobject *kobj);
@@ -191,6 +192,7 @@ BTRFS_FEAT_ATTR_INCOMPAT(extended_iref, EXTENDED_IREF);
 BTRFS_FEAT_ATTR_INCOMPAT(raid56, RAID56);
 BTRFS_FEAT_ATTR_INCOMPAT(skinny_metadata, SKINNY_METADATA);
 BTRFS_FEAT_ATTR_INCOMPAT(no_holes, NO_HOLES);
+BTRFS_FEAT_ATTR_INCOMPAT(metadata_uuid, METADATA_UUID);
 BTRFS_FEAT_ATTR_COMPAT_RO(free_space_tree, FREE_SPACE_TREE);
 
 static struct attribute *btrfs_supported_feature_attrs[] = {
@@ -204,6 +206,7 @@ static struct attribute *btrfs_supported_feature_attrs[] = {
 	BTRFS_FEAT_ATTR_PTR(raid56),
 	BTRFS_FEAT_ATTR_PTR(skinny_metadata),
 	BTRFS_FEAT_ATTR_PTR(no_holes),
+	BTRFS_FEAT_ATTR_PTR(metadata_uuid),
 	BTRFS_FEAT_ATTR_PTR(free_space_tree),
 	NULL
 };
@@ -301,11 +304,12 @@ static ssize_t raid_bytes_show(struct kobject *kobj,
 	return snprintf(buf, PAGE_SIZE, "%llu\n", val);
 }
 
-static struct attribute *raid_attributes[] = {
+static struct attribute *raid_attrs[] = {
 	BTRFS_ATTR_PTR(raid, total_bytes),
 	BTRFS_ATTR_PTR(raid, used_bytes),
 	NULL
 };
+ATTRIBUTE_GROUPS(raid);
 
 static void release_raid_kobj(struct kobject *kobj)
 {
@@ -315,7 +319,7 @@ static void release_raid_kobj(struct kobject *kobj)
 struct kobj_type btrfs_raid_ktype = {
 	.sysfs_ops = &kobj_sysfs_ops,
 	.release = release_raid_kobj,
-	.default_attrs = raid_attributes,
+	.default_groups = raid_groups,
 };
 
 #define SPACE_INFO_ATTR(field)						\
@@ -362,6 +366,7 @@ static struct attribute *space_info_attrs[] = {
 	BTRFS_ATTR_PTR(space_info, total_bytes_pinned),
 	NULL,
 };
+ATTRIBUTE_GROUPS(space_info);
 
 static void space_info_release(struct kobject *kobj)
 {
@@ -373,7 +378,7 @@ static void space_info_release(struct kobject *kobj)
 struct kobj_type space_info_ktype = {
 	.sysfs_ops = &kobj_sysfs_ops,
 	.release = space_info_release,
-	.default_attrs = space_info_attrs,
+	.default_groups = space_info_groups,
 };
 
 static const struct attribute *allocation_attrs[] = {
@@ -505,12 +510,24 @@ static ssize_t quota_override_store(struct kobject *kobj,
 
 BTRFS_ATTR_RW(, quota_override, quota_override_show, quota_override_store);
 
+static ssize_t btrfs_metadata_uuid_show(struct kobject *kobj,
+				struct kobj_attribute *a, char *buf)
+{
+	struct btrfs_fs_info *fs_info = to_fs_info(kobj);
+
+	return snprintf(buf, PAGE_SIZE, "%pU\n",
+			fs_info->fs_devices->metadata_uuid);
+}
+
+BTRFS_ATTR(, metadata_uuid, btrfs_metadata_uuid_show);
+
 static const struct attribute *btrfs_attrs[] = {
 	BTRFS_ATTR_PTR(, label),
 	BTRFS_ATTR_PTR(, nodesize),
 	BTRFS_ATTR_PTR(, sectorsize),
 	BTRFS_ATTR_PTR(, clone_alignment),
 	BTRFS_ATTR_PTR(, quota_override),
+	BTRFS_ATTR_PTR(, metadata_uuid),
 	NULL,
 };
 
@@ -811,7 +828,12 @@ int btrfs_sysfs_add_fsid(struct btrfs_fs_devices *fs_devs,
 	fs_devs->fsid_kobj.kset = btrfs_kset;
 	error = kobject_init_and_add(&fs_devs->fsid_kobj,
 				&btrfs_ktype, parent, "%pU", fs_devs->fsid);
-	return error;
+	if (error) {
+		kobject_put(&fs_devs->fsid_kobj);
+		return error;
+	}
+
+	return 0;
 }
 
 int btrfs_sysfs_add_mounted(struct btrfs_fs_info *fs_info)
@@ -891,12 +913,10 @@ void btrfs_sysfs_feature_update(struct btrfs_fs_info *fs_info,
 	ret = sysfs_create_group(fsid_kobj, &btrfs_feature_attr_group);
 }
 
-static int btrfs_init_debugfs(void)
+static void btrfs_init_debugfs(void)
 {
 #ifdef CONFIG_DEBUG_FS
 	btrfs_debugfs_root_dentry = debugfs_create_dir("btrfs", NULL);
-	if (!btrfs_debugfs_root_dentry)
-		return -ENOMEM;
 
 	/*
 	 * Example code, how to export data through debugfs.
@@ -910,7 +930,6 @@ static int btrfs_init_debugfs(void)
 #endif
 
 #endif
-	return 0;
 }
 
 int __init btrfs_init_sysfs(void)
@@ -921,9 +940,7 @@ int __init btrfs_init_sysfs(void)
 	if (!btrfs_kset)
 		return -ENOMEM;
 
-	ret = btrfs_init_debugfs();
-	if (ret)
-		goto out1;
+	btrfs_init_debugfs();
 
 	init_feature_attrs();
 	ret = sysfs_create_group(&btrfs_kset->kobj, &btrfs_feature_attr_group);
@@ -940,7 +957,6 @@ out_remove_group:
 	sysfs_remove_group(&btrfs_kset->kobj, &btrfs_feature_attr_group);
 out2:
 	debugfs_remove_recursive(btrfs_debugfs_root_dentry);
-out1:
 	kset_unregister(btrfs_kset);
 
 	return ret;

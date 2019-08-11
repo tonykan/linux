@@ -151,7 +151,7 @@ At the runtime you can disable idle states with below methods:
 
 It is possible to disable CPU idle states by way of the PM QoS
 subsystem, more specifically by using the "/dev/cpu_dma_latency"
-interface (see Documentation/power/pm_qos_interface.txt for more
+interface (see Documentation/power/pm_qos_interface.rst for more
 details).  As specified in the PM QoS documentation the requested
 parameter will stay in effect until the file descriptor is released.
 For example:
@@ -165,7 +165,7 @@ Do some work...
 The same can also be done from an application program.
 
 Disable specific CPU's specific idle state from cpuidle sysfs (see
-Documentation/cpuidle/sysfs.txt):
+Documentation/admin-guide/pm/cpuidle.rst):
 # echo 1 > /sys/devices/system/cpu/cpu$cpu/cpuidle/state$state/disable
 
 

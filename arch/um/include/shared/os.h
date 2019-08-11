@@ -175,6 +175,7 @@ extern int os_fchange_dir(int fd);
 extern unsigned os_major(unsigned long long dev);
 extern unsigned os_minor(unsigned long long dev);
 extern unsigned long long os_makedev(unsigned major, unsigned minor);
+extern int os_falloc_punch(int fd, unsigned long long offset, int count);
 
 /* start_up.c */
 extern void os_early_checks(void);
@@ -249,15 +250,13 @@ extern void os_warn(const char *fmt, ...)
 
 /* time.c */
 extern void os_idle_sleep(unsigned long long nsecs);
-extern int os_timer_create(void* timer);
-extern int os_timer_set_interval(void* timer, void* its);
-extern int os_timer_one_shot(int ticks);
-extern long long os_timer_disable(void);
-extern long os_timer_remain(void* timer);
+extern int os_timer_create(void);
+extern int os_timer_set_interval(unsigned long long nsecs);
+extern int os_timer_one_shot(unsigned long long nsecs);
+extern void os_timer_disable(void);
 extern void uml_idle_timer(void);
 extern long long os_persistent_clock_emulation(void);
 extern long long os_nsecs(void);
-extern long long os_vnsecs(void);
 
 /* skas/mem.c */
 extern long run_syscall_stub(struct mm_id * mm_idp,

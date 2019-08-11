@@ -71,7 +71,7 @@ void free_initrd_mem(unsigned long start, unsigned long end)
 		ClearPageReserved(virt_to_page(start));
 		init_page_count(virt_to_page(start));
 		free_page(start);
-		totalram_pages++;
+		totalram_pages_inc();
 	}
 }
 #endif
@@ -88,7 +88,7 @@ void free_initmem(void)
 		ClearPageReserved(virt_to_page(addr));
 		init_page_count(virt_to_page(addr));
 		free_page(addr);
-		totalram_pages++;
+		totalram_pages_inc();
 		addr += PAGE_SIZE;
 	}
 
@@ -113,8 +113,6 @@ void __init pre_mmu_init(void)
 	pgd_init((unsigned long *)swapper_pg_dir);
 	TLBMISS_HANDLER_SETUP_PGD(swapper_pg_dir);
 	TLBMISS_HANDLER_SETUP_PGD_KERNEL(swapper_pg_dir);
-
-	asid_cache(smp_processor_id()) = ASID_FIRST_VERSION;
 
 	/* Setup page mask to 4k */
 	write_mmu_pagemask(0);

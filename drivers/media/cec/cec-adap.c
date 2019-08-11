@@ -16,7 +16,10 @@
 #include <linux/string.h>
 #include <linux/types.h>
 
+#include <drm/drm_connector.h>
+#include <drm/drm_device.h>
 #include <drm/drm_edid.h>
+#include <drm/drm_file.h>
 
 #include "cec-priv.h"
 
@@ -74,6 +77,16 @@ u16 cec_get_edid_phys_addr(const u8 *edid, unsigned int size,
 	return (edid[loc] << 8) | edid[loc + 1];
 }
 EXPORT_SYMBOL_GPL(cec_get_edid_phys_addr);
+
+void cec_fill_conn_info_from_drm(struct cec_connector_info *conn_info,
+				 const struct drm_connector *connector)
+{
+	memset(conn_info, 0, sizeof(*conn_info));
+	conn_info->type = CEC_CONNECTOR_TYPE_DRM;
+	conn_info->drm.card_no = connector->dev->primary->index;
+	conn_info->drm.connector_id = connector->base.id;
+}
+EXPORT_SYMBOL_GPL(cec_fill_conn_info_from_drm);
 
 /*
  * Queue a new event for this filehandle. If ts == 0, then set it
@@ -455,7 +468,7 @@ int cec_thread_func(void *_adap)
 				(adap->needs_hpd &&
 				 (!adap->is_configured && !adap->is_configuring)) ||
 				kthread_should_stop() ||
-				(!adap->transmitting &&
+				(!adap->transmit_in_progress &&
 				 !list_empty(&adap->transmit_queue)),
 				msecs_to_jiffies(CEC_XFER_TIMEOUT_MS));
 			timeout = err == 0;
@@ -463,7 +476,7 @@ int cec_thread_func(void *_adap)
 			/* Otherwise we just wait for something to happen. */
 			wait_event_interruptible(adap->kthread_waitq,
 				kthread_should_stop() ||
-				(!adap->transmitting &&
+				(!adap->transmit_in_progress &&
 				 !list_empty(&adap->transmit_queue)));
 		}
 
@@ -488,6 +501,7 @@ int cec_thread_func(void *_adap)
 			pr_warn("cec-%s: message %*ph timed out\n", adap->name,
 				adap->transmitting->msg.len,
 				adap->transmitting->msg.msg);
+			adap->transmit_in_progress = false;
 			adap->tx_timeouts++;
 			/* Just give up on this. */
 			cec_data_cancel(adap->transmitting,
@@ -499,7 +513,7 @@ int cec_thread_func(void *_adap)
 		 * If we are still transmitting, or there is nothing new to
 		 * transmit, then just continue waiting.
 		 */
-		if (adap->transmitting || list_empty(&adap->transmit_queue))
+		if (adap->transmit_in_progress || list_empty(&adap->transmit_queue))
 			goto unlock;
 
 		/* Get a new message to transmit */
@@ -545,6 +559,8 @@ int cec_thread_func(void *_adap)
 		if (adap->ops->adap_transmit(adap, data->attempts,
 					     signal_free_time, &data->msg))
 			cec_data_cancel(data, CEC_TX_STATUS_ABORTED);
+		else
+			adap->transmit_in_progress = true;
 
 unlock:
 		mutex_unlock(&adap->lock);
@@ -575,14 +591,17 @@ void cec_transmit_done_ts(struct cec_adapter *adap, u8 status,
 	data = adap->transmitting;
 	if (!data) {
 		/*
-		 * This can happen if a transmit was issued and the cable is
+		 * This might happen if a transmit was issued and the cable is
 		 * unplugged while the transmit is ongoing. Ignore this
 		 * transmit in that case.
 		 */
-		dprintk(1, "%s was called without an ongoing transmit!\n",
-			__func__);
-		goto unlock;
+		if (!adap->transmit_in_progress)
+			dprintk(1, "%s was called without an ongoing transmit!\n",
+				__func__);
+		adap->transmit_in_progress = false;
+		goto wake_thread;
 	}
+	adap->transmit_in_progress = false;
 
 	msg = &data->msg;
 
@@ -648,7 +667,6 @@ wake_thread:
 	 * for transmitting or to retry the current message.
 	 */
 	wake_up_interruptible(&adap->kthread_waitq);
-unlock:
 	mutex_unlock(&adap->lock);
 }
 EXPORT_SYMBOL_GPL(cec_transmit_done_ts);
@@ -715,6 +733,7 @@ int cec_transmit_msg_fh(struct cec_adapter *adap, struct cec_msg *msg,
 			struct cec_fh *fh, bool block)
 {
 	struct cec_data *data;
+	bool is_raw = msg_is_raw(msg);
 
 	msg->rx_ts = 0;
 	msg->tx_ts = 0;
@@ -730,15 +749,10 @@ int cec_transmit_msg_fh(struct cec_adapter *adap, struct cec_msg *msg,
 		/* Make sure the timeout isn't 0. */
 		msg->timeout = 1000;
 	}
-	if (msg->timeout)
-		msg->flags &= CEC_MSG_FL_REPLY_TO_FOLLOWERS;
-	else
-		msg->flags = 0;
+	msg->flags &= CEC_MSG_FL_REPLY_TO_FOLLOWERS | CEC_MSG_FL_RAW;
 
-	if (msg->len > 1 && msg->msg[1] == CEC_MSG_CDC_MESSAGE) {
-		msg->msg[2] = adap->phys_addr >> 8;
-		msg->msg[3] = adap->phys_addr & 0xff;
-	}
+	if (!msg->timeout)
+		msg->flags &= ~CEC_MSG_FL_REPLY_TO_FOLLOWERS;
 
 	/* Sanity checks */
 	if (msg->len == 0 || msg->len > CEC_MAX_MSG_SIZE) {
@@ -760,44 +774,80 @@ int cec_transmit_msg_fh(struct cec_adapter *adap, struct cec_msg *msg,
 		dprintk(1, "%s: can't reply to poll msg\n", __func__);
 		return -EINVAL;
 	}
-	if (msg->len == 1) {
-		if (cec_msg_destination(msg) == 0xf) {
-			dprintk(1, "%s: invalid poll message\n", __func__);
+
+	if (is_raw) {
+		if (!capable(CAP_SYS_RAWIO))
+			return -EPERM;
+	} else {
+		/* A CDC-Only device can only send CDC messages */
+		if ((adap->log_addrs.flags & CEC_LOG_ADDRS_FL_CDC_ONLY) &&
+		    (msg->len == 1 || msg->msg[1] != CEC_MSG_CDC_MESSAGE)) {
+			dprintk(1, "%s: not a CDC message\n", __func__);
 			return -EINVAL;
 		}
-		if (cec_has_log_addr(adap, cec_msg_destination(msg))) {
-			/*
-			 * If the destination is a logical address our adapter
-			 * has already claimed, then just NACK this.
-			 * It depends on the hardware what it will do with a
-			 * POLL to itself (some OK this), so it is just as
-			 * easy to handle it here so the behavior will be
-			 * consistent.
-			 */
-			msg->tx_ts = ktime_get_ns();
-			msg->tx_status = CEC_TX_STATUS_NACK |
-					 CEC_TX_STATUS_MAX_RETRIES;
-			msg->tx_nack_cnt = 1;
-			msg->sequence = ++adap->sequence;
-			if (!msg->sequence)
+
+		if (msg->len >= 4 && msg->msg[1] == CEC_MSG_CDC_MESSAGE) {
+			msg->msg[2] = adap->phys_addr >> 8;
+			msg->msg[3] = adap->phys_addr & 0xff;
+		}
+
+		if (msg->len == 1) {
+			if (cec_msg_destination(msg) == 0xf) {
+				dprintk(1, "%s: invalid poll message\n",
+					__func__);
+				return -EINVAL;
+			}
+			if (cec_has_log_addr(adap, cec_msg_destination(msg))) {
+				/*
+				 * If the destination is a logical address our
+				 * adapter has already claimed, then just NACK
+				 * this. It depends on the hardware what it will
+				 * do with a POLL to itself (some OK this), so
+				 * it is just as easy to handle it here so the
+				 * behavior will be consistent.
+				 */
+				msg->tx_ts = ktime_get_ns();
+				msg->tx_status = CEC_TX_STATUS_NACK |
+					CEC_TX_STATUS_MAX_RETRIES;
+				msg->tx_nack_cnt = 1;
 				msg->sequence = ++adap->sequence;
-			return 0;
+				if (!msg->sequence)
+					msg->sequence = ++adap->sequence;
+				return 0;
+			}
+		}
+		if (msg->len > 1 && !cec_msg_is_broadcast(msg) &&
+		    cec_has_log_addr(adap, cec_msg_destination(msg))) {
+			dprintk(1, "%s: destination is the adapter itself\n",
+				__func__);
+			return -EINVAL;
+		}
+		if (msg->len > 1 && adap->is_configured &&
+		    !cec_has_log_addr(adap, cec_msg_initiator(msg))) {
+			dprintk(1, "%s: initiator has unknown logical address %d\n",
+				__func__, cec_msg_initiator(msg));
+			return -EINVAL;
+		}
+		/*
+		 * Special case: allow Ping and IMAGE/TEXT_VIEW_ON to be
+		 * transmitted to a TV, even if the adapter is unconfigured.
+		 * This makes it possible to detect or wake up displays that
+		 * pull down the HPD when in standby.
+		 */
+		if (!adap->is_configured && !adap->is_configuring &&
+		    (msg->len > 2 ||
+		     cec_msg_destination(msg) != CEC_LOG_ADDR_TV ||
+		     (msg->len == 2 && msg->msg[1] != CEC_MSG_IMAGE_VIEW_ON &&
+		      msg->msg[1] != CEC_MSG_TEXT_VIEW_ON))) {
+			dprintk(1, "%s: adapter is unconfigured\n", __func__);
+			return -ENONET;
 		}
 	}
-	if (msg->len > 1 && !cec_msg_is_broadcast(msg) &&
-	    cec_has_log_addr(adap, cec_msg_destination(msg))) {
-		dprintk(1, "%s: destination is the adapter itself\n", __func__);
-		return -EINVAL;
-	}
-	if (msg->len > 1 && adap->is_configured &&
-	    !cec_has_log_addr(adap, cec_msg_initiator(msg))) {
-		dprintk(1, "%s: initiator has unknown logical address %d\n",
-			__func__, cec_msg_initiator(msg));
-		return -EINVAL;
-	}
+
 	if (!adap->is_configured && !adap->is_configuring) {
-		if (adap->needs_hpd || msg->msg[0] != 0xf0) {
-			dprintk(1, "%s: adapter is unconfigured\n", __func__);
+		if (adap->needs_hpd) {
+			dprintk(1, "%s: adapter is unconfigured and needs HPD\n",
+				__func__);
 			return -ENONET;
 		}
 		if (msg->reply) {
@@ -1432,6 +1482,13 @@ configured:
 			las->log_addr[i],
 			cec_phys_addr_exp(adap->phys_addr));
 		cec_transmit_msg_fh(adap, &msg, NULL, false);
+
+		/* Report Vendor ID */
+		if (adap->log_addrs.vendor_id != CEC_VENDOR_ID_NONE) {
+			cec_msg_device_vendor_id(&msg,
+						 adap->log_addrs.vendor_id);
+			cec_transmit_msg_fh(adap, &msg, NULL, false);
+		}
 	}
 	adap->kthread_config = NULL;
 	complete(&adap->config_completion);
@@ -1496,8 +1553,11 @@ void __cec_s_phys_addr(struct cec_adapter *adap, u16 phys_addr, bool block)
 		if (adap->monitor_all_cnt)
 			WARN_ON(call_op(adap, adap_monitor_all_enable, false));
 		mutex_lock(&adap->devnode.lock);
-		if (adap->needs_hpd || list_empty(&adap->devnode.fhs))
+		if (adap->needs_hpd || list_empty(&adap->devnode.fhs)) {
 			WARN_ON(adap->ops->adap_enable(adap, false));
+			adap->transmit_in_progress = false;
+			wake_up_interruptible(&adap->kthread_waitq);
+		}
 		mutex_unlock(&adap->devnode.lock);
 		if (phys_addr == CEC_PHYS_ADDR_INVALID)
 			return;
@@ -1505,6 +1565,7 @@ void __cec_s_phys_addr(struct cec_adapter *adap, u16 phys_addr, bool block)
 
 	mutex_lock(&adap->devnode.lock);
 	adap->last_initiator = 0xff;
+	adap->transmit_in_progress = false;
 
 	if ((adap->needs_hpd || list_empty(&adap->devnode.fhs)) &&
 	    adap->ops->adap_enable(adap, true)) {
@@ -1549,6 +1610,22 @@ void cec_s_phys_addr_from_edid(struct cec_adapter *adap,
 	cec_s_phys_addr(adap, pa, false);
 }
 EXPORT_SYMBOL_GPL(cec_s_phys_addr_from_edid);
+
+void cec_s_conn_info(struct cec_adapter *adap,
+		     const struct cec_connector_info *conn_info)
+{
+	if (!(adap->capabilities & CEC_CAP_CONNECTOR_INFO))
+		return;
+
+	mutex_lock(&adap->lock);
+	if (conn_info)
+		adap->conn_info = *conn_info;
+	else
+		memset(&adap->conn_info, 0, sizeof(adap->conn_info));
+	cec_post_state_event(adap);
+	mutex_unlock(&adap->lock);
+}
+EXPORT_SYMBOL_GPL(cec_s_conn_info);
 
 /*
  * Called from either the ioctl or a driver to set the logical addresses.

@@ -364,7 +364,7 @@ common_exception:
 	s32i	a2, a1, PT_DEBUGCAUSE
 	s32i	a3, a1, PT_PC
 
-	movi	a2, -1
+	movi	a2, NO_SYSCALL
 	rsr	a3, excvaddr
 	s32i	a2, a1, PT_SYSCALL
 	movi	a2, 0
@@ -1021,25 +1021,6 @@ ENDPROC(fast_alloca)
  *   depc:	a2, original value saved on stack (PT_DEPC)
  *   excsave_1:	dispatch table
  */
-
-ENTRY(fast_syscall_kernel)
-
-	/* Skip syscall. */
-
-	rsr	a0, epc1
-	addi	a0, a0, 3
-	wsr	a0, epc1
-
-	l32i	a0, a2, PT_DEPC
-	bgeui	a0, VALID_DOUBLE_EXCEPTION_ADDRESS, fast_syscall_unrecoverable
-
-	rsr	a0, depc			# get syscall-nr
-	_beqz	a0, fast_syscall_spill_registers
-	_beqi	a0, __NR_xtensa, fast_syscall_xtensa
-
-	j	kernel_exception
-
-ENDPROC(fast_syscall_kernel)
 
 ENTRY(fast_syscall_user)
 
@@ -1861,24 +1842,35 @@ ENDPROC(fast_store_prohibited)
 
 ENTRY(system_call)
 
-	entry	a1, 32
+	/* reserve 4 bytes on stack for function parameter */
+	abi_entry(4)
 
 	/* regs->syscall = regs->areg[2] */
 
-	l32i	a3, a2, PT_AREG2
+	l32i	a7, a2, PT_AREG2
+	s32i	a7, a2, PT_SYSCALL
+
+	GET_THREAD_INFO(a4, a1)
+	l32i	a3, a4, TI_FLAGS
+	movi	a4, _TIF_WORK_MASK
+	and	a3, a3, a4
+	beqz	a3, 1f
+
 	mov	a6, a2
-	s32i	a3, a2, PT_SYSCALL
 	call4	do_syscall_trace_enter
-	mov	a3, a6
+	l32i	a7, a2, PT_SYSCALL
+
+1:
+	s32i	a7, a1, 4
 
 	/* syscall = sys_call_table[syscall_nr] */
 
 	movi	a4, sys_call_table
-	movi	a5, __NR_syscall_count
+	movi	a5, __NR_syscalls
 	movi	a6, -ENOSYS
-	bgeu	a3, a5, 1f
+	bgeu	a7, a5, 1f
 
-	addx4	a4, a3, a4
+	addx4	a4, a7, a4
 	l32i	a4, a4, 0
 	movi	a5, sys_ni_syscall;
 	beq	a4, a5, 1f
@@ -1900,9 +1892,17 @@ ENTRY(system_call)
 1:	/* regs->areg[2] = return_value */
 
 	s32i	a6, a2, PT_AREG2
+	bnez	a3, 1f
+	abi_ret(4)
+
+1:
+	l32i	a4, a1, 4
+	l32i	a3, a2, PT_SYSCALL
+	s32i	a4, a2, PT_SYSCALL
 	mov	a6, a2
 	call4	do_syscall_trace_leave
-	retw
+	s32i	a3, a2, PT_SYSCALL
+	abi_ret(4)
 
 ENDPROC(system_call)
 
@@ -1953,7 +1953,7 @@ ENDPROC(system_call)
 
 ENTRY(_switch_to)
 
-	entry	a1, 48
+	abi_entry(XTENSA_SPILL_STACK_RESERVE)
 
 	mov	a11, a3			# and 'next' (a3)
 
@@ -2014,7 +2014,7 @@ ENTRY(_switch_to)
 	wsr	a14, ps
 	rsync
 
-	retw
+	abi_ret(XTENSA_SPILL_STACK_RESERVE)
 
 ENDPROC(_switch_to)
 

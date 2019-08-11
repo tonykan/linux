@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Microblaze support for cache consistent memory.
  * Copyright (C) 2010 Michal Simek <monstr@monstr.eu>
@@ -7,10 +8,6 @@
  * Based on PowerPC version derived from arch/arm/mm/consistent.c
  * Copyright (C) 2001 Dan Malek (dmalek@jlc.net)
  * Copyright (C) 2000 Russell King
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/export.h>
@@ -81,7 +78,7 @@ void *arch_dma_alloc(struct device *dev, size_t size, dma_addr_t *dma_handle,
 	size = PAGE_ALIGN(size);
 	order = get_order(size);
 
-	vaddr = __get_free_pages(gfp, order);
+	vaddr = __get_free_pages(gfp | __GFP_ZERO, order);
 	if (!vaddr)
 		return NULL;
 

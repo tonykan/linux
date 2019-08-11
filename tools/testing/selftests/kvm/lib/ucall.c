@@ -34,7 +34,8 @@ void ucall_init(struct kvm_vm *vm, ucall_type_t type, void *arg)
 		return;
 
 	if (type == UCALL_MMIO) {
-		vm_paddr_t gpa, start, end, step;
+		vm_paddr_t gpa, start, end, step, offset;
+		unsigned bits;
 		bool ret;
 
 		if (arg) {
@@ -45,25 +46,30 @@ void ucall_init(struct kvm_vm *vm, ucall_type_t type, void *arg)
 		}
 
 		/*
-		 * Find an address within the allowed virtual address space,
-		 * that does _not_ have a KVM memory region associated with it.
-		 * Identity mapping an address like this allows the guest to
+		 * Find an address within the allowed physical and virtual address
+		 * spaces, that does _not_ have a KVM memory region associated with
+		 * it. Identity mapping an address like this allows the guest to
 		 * access it, but as KVM doesn't know what to do with it, it
 		 * will assume it's something userspace handles and exit with
 		 * KVM_EXIT_MMIO. Well, at least that's how it works for AArch64.
-		 * Here we start with a guess that the addresses around two
-		 * thirds of the VA space are unmapped and then work both down
-		 * and up from there in 1/6 VA space sized steps.
+		 * Here we start with a guess that the addresses around 5/8th
+		 * of the allowed space are unmapped and then work both down and
+		 * up from there in 1/16th allowed space sized steps.
+		 *
+		 * Note, we need to use VA-bits - 1 when calculating the allowed
+		 * virtual address space for an identity mapping because the upper
+		 * half of the virtual address space is the two's complement of the
+		 * lower and won't match physical addresses.
 		 */
-		start = 1ul << (vm->va_bits * 2 / 3);
-		end = 1ul << vm->va_bits;
-		step = 1ul << (vm->va_bits / 6);
-		for (gpa = start; gpa >= 0; gpa -= step) {
-			if (ucall_mmio_init(vm, gpa & ~(vm->page_size - 1)))
+		bits = vm->va_bits - 1;
+		bits = vm->pa_bits < bits ? vm->pa_bits : bits;
+		end = 1ul << bits;
+		start = end * 5 / 8;
+		step = end / 16;
+		for (offset = 0; offset < end - start; offset += step) {
+			if (ucall_mmio_init(vm, start - offset))
 				return;
-		}
-		for (gpa = start + step; gpa < end; gpa += step) {
-			if (ucall_mmio_init(vm, gpa & ~(vm->page_size - 1)))
+			if (ucall_mmio_init(vm, start + offset))
 				return;
 		}
 		TEST_ASSERT(false, "Can't find a ucall mmio address");
@@ -119,16 +125,16 @@ void ucall(uint64_t cmd, int nargs, ...)
 uint64_t get_ucall(struct kvm_vm *vm, uint32_t vcpu_id, struct ucall *uc)
 {
 	struct kvm_run *run = vcpu_state(vm, vcpu_id);
-
-	memset(uc, 0, sizeof(*uc));
+	struct ucall ucall = {};
+	bool got_ucall = false;
 
 #ifdef __x86_64__
 	if (ucall_type == UCALL_PIO && run->exit_reason == KVM_EXIT_IO &&
 	    run->io.port == UCALL_PIO_PORT) {
 		struct kvm_regs regs;
 		vcpu_regs_get(vm, vcpu_id, &regs);
-		memcpy(uc, addr_gva2hva(vm, (vm_vaddr_t)regs.rdi), sizeof(*uc));
-		return uc->cmd;
+		memcpy(&ucall, addr_gva2hva(vm, (vm_vaddr_t)regs.rdi), sizeof(ucall));
+		got_ucall = true;
 	}
 #endif
 	if (ucall_type == UCALL_MMIO && run->exit_reason == KVM_EXIT_MMIO &&
@@ -136,9 +142,16 @@ uint64_t get_ucall(struct kvm_vm *vm, uint32_t vcpu_id, struct ucall *uc)
 		vm_vaddr_t gva;
 		TEST_ASSERT(run->mmio.is_write && run->mmio.len == 8,
 			    "Unexpected ucall exit mmio address access");
-		gva = *(vm_vaddr_t *)run->mmio.data;
-		memcpy(uc, addr_gva2hva(vm, gva), sizeof(*uc));
+		memcpy(&gva, run->mmio.data, sizeof(gva));
+		memcpy(&ucall, addr_gva2hva(vm, gva), sizeof(ucall));
+		got_ucall = true;
 	}
 
-	return uc->cmd;
+	if (got_ucall) {
+		vcpu_run_complete_io(vm, vcpu_id);
+		if (uc)
+			memcpy(uc, &ucall, sizeof(ucall));
+	}
+
+	return ucall.cmd;
 }

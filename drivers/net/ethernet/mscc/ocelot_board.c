@@ -12,6 +12,7 @@
 #include <linux/of_platform.h>
 #include <linux/mfd/syscon.h>
 #include <linux/skbuff.h>
+#include <net/switchdev.h>
 
 #include "ocelot.h"
 
@@ -187,6 +188,7 @@ static int mscc_ocelot_probe(struct platform_device *pdev)
 		{ QSYS, "qsys" },
 		{ ANA, "ana" },
 		{ QS, "qs" },
+		{ S2, "s2" },
 	};
 
 	if (!np && !pdev->dev.platform_data)
@@ -266,6 +268,7 @@ static int mscc_ocelot_probe(struct platform_device *pdev)
 		struct phy *serdes;
 		void __iomem *regs;
 		char res_name[8];
+		int phy_mode;
 		u32 port;
 
 		if (of_property_read_u32(portnp, "reg", &port))
@@ -288,14 +291,16 @@ static int mscc_ocelot_probe(struct platform_device *pdev)
 			continue;
 
 		err = ocelot_probe_port(ocelot, port, regs, phy);
-		if (err)
+		if (err) {
+			of_node_put(portnp);
 			return err;
+		}
 
-		err = of_get_phy_mode(portnp);
-		if (err < 0)
+		phy_mode = of_get_phy_mode(portnp);
+		if (phy_mode < 0)
 			ocelot->ports[port]->phy_mode = PHY_INTERFACE_MODE_NA;
 		else
-			ocelot->ports[port]->phy_mode = err;
+			ocelot->ports[port]->phy_mode = phy_mode;
 
 		switch (ocelot->ports[port]->phy_mode) {
 		case PHY_INTERFACE_MODE_NA:
@@ -303,11 +308,19 @@ static int mscc_ocelot_probe(struct platform_device *pdev)
 		case PHY_INTERFACE_MODE_SGMII:
 			break;
 		case PHY_INTERFACE_MODE_QSGMII:
+			/* Ensure clock signals and speed is set on all
+			 * QSGMII links
+			 */
+			ocelot_port_writel(ocelot->ports[port],
+					   DEV_CLOCK_CFG_LINK_SPEED
+					   (OCELOT_SPEED_1000),
+					   DEV_CLOCK_CFG);
 			break;
 		default:
 			dev_err(ocelot->dev,
 				"invalid phy mode for port%d, (Q)SGMII only\n",
 				port);
+			of_node_put(portnp);
 			return -EINVAL;
 		}
 
@@ -328,6 +341,8 @@ static int mscc_ocelot_probe(struct platform_device *pdev)
 	}
 
 	register_netdevice_notifier(&ocelot_netdevice_nb);
+	register_switchdev_notifier(&ocelot_switchdev_nb);
+	register_switchdev_blocking_notifier(&ocelot_switchdev_blocking_nb);
 
 	dev_info(&pdev->dev, "Ocelot switch probed\n");
 
@@ -342,6 +357,8 @@ static int mscc_ocelot_remove(struct platform_device *pdev)
 	struct ocelot *ocelot = platform_get_drvdata(pdev);
 
 	ocelot_deinit(ocelot);
+	unregister_switchdev_blocking_notifier(&ocelot_switchdev_blocking_nb);
+	unregister_switchdev_notifier(&ocelot_switchdev_nb);
 	unregister_netdevice_notifier(&ocelot_netdevice_nb);
 
 	return 0;

@@ -405,19 +405,33 @@ static void sdma_flush(struct sdma_engine *sde)
 	struct sdma_txreq *txp, *txp_next;
 	LIST_HEAD(flushlist);
 	unsigned long flags;
+	uint seq;
 
 	/* flush from head to tail */
 	sdma_flush_descq(sde);
 	spin_lock_irqsave(&sde->flushlist_lock, flags);
 	/* copy flush list */
-	list_for_each_entry_safe(txp, txp_next, &sde->flushlist, list) {
-		list_del_init(&txp->list);
-		list_add_tail(&txp->list, &flushlist);
-	}
+	list_splice_init(&sde->flushlist, &flushlist);
 	spin_unlock_irqrestore(&sde->flushlist_lock, flags);
 	/* flush from flush list */
 	list_for_each_entry_safe(txp, txp_next, &flushlist, list)
 		complete_tx(sde, txp, SDMA_TXREQ_S_ABORTED);
+	/* wakeup QPs orphaned on the dmawait list */
+	do {
+		struct iowait *w, *nw;
+
+		seq = read_seqbegin(&sde->waitlock);
+		if (!list_empty(&sde->dmawait)) {
+			write_seqlock(&sde->waitlock);
+			list_for_each_entry_safe(w, nw, &sde->dmawait, list) {
+				if (w->wakeup) {
+					w->wakeup(w, SDMA_AVAIL_REASON);
+					list_del_init(&w->list);
+				}
+			}
+			write_sequnlock(&sde->waitlock);
+		}
+	} while (read_seqretry(&sde->waitlock, seq));
 }
 
 /*
@@ -855,14 +869,13 @@ struct sdma_engine *sdma_select_user_engine(struct hfi1_devdata *dd,
 {
 	struct sdma_rht_node *rht_node;
 	struct sdma_engine *sde = NULL;
-	const struct cpumask *current_mask = &current->cpus_allowed;
 	unsigned long cpu_id;
 
 	/*
 	 * To ensure that always the same sdma engine(s) will be
 	 * selected make sure the process is pinned to this CPU only.
 	 */
-	if (cpumask_weight(current_mask) != 1)
+	if (current->nr_cpus_allowed != 1)
 		goto out;
 
 	cpu_id = smp_processor_id();
@@ -1424,6 +1437,7 @@ int sdma_init(struct hfi1_devdata *dd, u8 port)
 		seqlock_init(&sde->head_lock);
 		spin_lock_init(&sde->senddmactrl_lock);
 		spin_lock_init(&sde->flushlist_lock);
+		seqlock_init(&sde->waitlock);
 		/* insure there is always a zero bit */
 		sde->ahg_bits = 0xfffffffe00000000ULL;
 
@@ -1452,12 +1466,9 @@ int sdma_init(struct hfi1_devdata *dd, u8 port)
 		timer_setup(&sde->err_progress_check_timer,
 			    sdma_err_progress_check, 0);
 
-		sde->descq = dma_zalloc_coherent(
-			&dd->pcidev->dev,
-			descq_cnt * sizeof(u64[2]),
-			&sde->descq_phys,
-			GFP_KERNEL
-		);
+		sde->descq = dma_alloc_coherent(&dd->pcidev->dev,
+						descq_cnt * sizeof(u64[2]),
+						&sde->descq_phys, GFP_KERNEL);
 		if (!sde->descq)
 			goto bail;
 		sde->tx_ring =
@@ -1470,24 +1481,18 @@ int sdma_init(struct hfi1_devdata *dd, u8 port)
 
 	dd->sdma_heads_size = L1_CACHE_BYTES * num_engines;
 	/* Allocate memory for DMA of head registers to memory */
-	dd->sdma_heads_dma = dma_zalloc_coherent(
-		&dd->pcidev->dev,
-		dd->sdma_heads_size,
-		&dd->sdma_heads_phys,
-		GFP_KERNEL
-	);
+	dd->sdma_heads_dma = dma_alloc_coherent(&dd->pcidev->dev,
+						dd->sdma_heads_size,
+						&dd->sdma_heads_phys,
+						GFP_KERNEL);
 	if (!dd->sdma_heads_dma) {
 		dd_dev_err(dd, "failed to allocate SendDMA head memory\n");
 		goto bail;
 	}
 
 	/* Allocate memory for pad */
-	dd->sdma_pad_dma = dma_zalloc_coherent(
-		&dd->pcidev->dev,
-		sizeof(u32),
-		&dd->sdma_pad_phys,
-		GFP_KERNEL
-	);
+	dd->sdma_pad_dma = dma_alloc_coherent(&dd->pcidev->dev, sizeof(u32),
+					      &dd->sdma_pad_phys, GFP_KERNEL);
 	if (!dd->sdma_pad_dma) {
 		dd_dev_err(dd, "failed to allocate SendDMA pad memory\n");
 		goto bail;
@@ -1755,11 +1760,9 @@ retry:
  */
 static void sdma_desc_avail(struct sdma_engine *sde, uint avail)
 {
-	struct iowait *wait, *nw;
+	struct iowait *wait, *nw, *twait;
 	struct iowait *waits[SDMA_WAIT_BATCH_SIZE];
-	uint i, n = 0, seq, max_idx = 0;
-	struct hfi1_ibdev *dev = &sde->dd->verbs_dev;
-	u8 max_starved_cnt = 0;
+	uint i, n = 0, seq, tidx = 0;
 
 #ifdef CONFIG_SDMA_VERBOSITY
 	dd_dev_err(sde->dd, "CONFIG SDMA(%u) %s:%d %s()\n", sde->this_idx,
@@ -1768,10 +1771,10 @@ static void sdma_desc_avail(struct sdma_engine *sde, uint avail)
 #endif
 
 	do {
-		seq = read_seqbegin(&dev->iowait_lock);
+		seq = read_seqbegin(&sde->waitlock);
 		if (!list_empty(&sde->dmawait)) {
 			/* at least one item */
-			write_seqlock(&dev->iowait_lock);
+			write_seqlock(&sde->waitlock);
 			/* Harvest waiters wanting DMA descriptors */
 			list_for_each_entry_safe(
 					wait,
@@ -1784,27 +1787,34 @@ static void sdma_desc_avail(struct sdma_engine *sde, uint avail)
 					continue;
 				if (n == ARRAY_SIZE(waits))
 					break;
+				iowait_init_priority(wait);
 				num_desc = iowait_get_all_desc(wait);
 				if (num_desc > avail)
 					break;
 				avail -= num_desc;
-				/* Find the most starved wait memeber */
-				iowait_starve_find_max(wait, &max_starved_cnt,
-						       n, &max_idx);
+				/* Find the top-priority wait memeber */
+				if (n) {
+					twait = waits[tidx];
+					tidx =
+					    iowait_priority_update_top(wait,
+								       twait,
+								       n,
+								       tidx);
+				}
 				list_del_init(&wait->list);
 				waits[n++] = wait;
 			}
-			write_sequnlock(&dev->iowait_lock);
+			write_sequnlock(&sde->waitlock);
 			break;
 		}
-	} while (read_seqretry(&dev->iowait_lock, seq));
+	} while (read_seqretry(&sde->waitlock, seq));
 
-	/* Schedule the most starved one first */
+	/* Schedule the top-priority entry first */
 	if (n)
-		waits[max_idx]->wakeup(waits[max_idx], SDMA_AVAIL_REASON);
+		waits[tidx]->wakeup(waits[tidx], SDMA_AVAIL_REASON);
 
 	for (i = 0; i < n; i++)
-		if (i != max_idx)
+		if (i != tidx)
 			waits[i]->wakeup(waits[i], SDMA_AVAIL_REASON);
 }
 
@@ -2416,7 +2426,7 @@ unlock_noconn:
 	list_add_tail(&tx->list, &sde->flushlist);
 	spin_unlock(&sde->flushlist_lock);
 	iowait_inc_wait_count(wait, tx->num_desc);
-	schedule_work(&sde->flush_worker);
+	queue_work_on(sde->cpu, system_highpri_wq, &sde->flush_worker);
 	ret = -ECOMM;
 	goto unlock;
 nodesc:
@@ -2514,7 +2524,7 @@ unlock_noconn:
 		iowait_inc_wait_count(wait, tx->num_desc);
 	}
 	spin_unlock(&sde->flushlist_lock);
-	schedule_work(&sde->flush_worker);
+	queue_work_on(sde->cpu, system_highpri_wq, &sde->flush_worker);
 	ret = -ECOMM;
 	goto update_tail;
 nodesc:

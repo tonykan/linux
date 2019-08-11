@@ -1,7 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License version 2 as published
- *  by the Free Software Foundation.
  *
  *  Copyright © 2012 John Crispin <john@phrozen.org>
  *  Copyright © 2016 Hauke Mehrtens <hauke@hauke-m.de>
@@ -176,7 +174,7 @@ static int xway_nand_probe(struct platform_device *pdev)
 
 	data->chip.legacy.cmd_ctrl = xway_cmd_ctrl;
 	data->chip.legacy.dev_ready = xway_dev_ready;
-	data->chip.select_chip = xway_select_chip;
+	data->chip.legacy.select_chip = xway_select_chip;
 	data->chip.legacy.write_buf = xway_write_buf;
 	data->chip.legacy.read_buf = xway_read_buf;
 	data->chip.legacy.read_byte = xway_read_byte;

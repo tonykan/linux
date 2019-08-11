@@ -132,7 +132,7 @@ ia64_rt_sigreturn (struct sigscratch *scr)
 		 */
 		retval = (long) &ia64_strace_leave_kernel;
 
-	if (!access_ok(VERIFY_READ, sc, sizeof(*sc)))
+	if (!access_ok(sc, sizeof(*sc)))
 		goto give_sigsegv;
 
 	if (GET_SIGSET(&set, &sc->sc_mask))
@@ -152,7 +152,7 @@ ia64_rt_sigreturn (struct sigscratch *scr)
 	return retval;
 
   give_sigsegv:
-	force_sig(SIGSEGV, current);
+	force_sig(SIGSEGV);
 	return retval;
 }
 
@@ -257,15 +257,15 @@ setup_frame(struct ksignal *ksig, sigset_t *set, struct sigscratch *scr)
 			 */
 			check_sp = (new_sp - sizeof(*frame)) & -STACK_ALIGN;
 			if (!likely(on_sig_stack(check_sp))) {
-				force_sigsegv(ksig->sig, current);
+				force_sigsegv(ksig->sig);
 				return 1;
 			}
 		}
 	}
 	frame = (void __user *) ((new_sp - sizeof(*frame)) & -STACK_ALIGN);
 
-	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame))) {
-		force_sigsegv(ksig->sig, current);
+	if (!access_ok(frame, sizeof(*frame))) {
+		force_sigsegv(ksig->sig);
 		return 1;
 	}
 
@@ -282,7 +282,7 @@ setup_frame(struct ksignal *ksig, sigset_t *set, struct sigscratch *scr)
 	err |= setup_sigcontext(&frame->sc, set, scr);
 
 	if (unlikely(err)) {
-		force_sigsegv(ksig->sig, current);
+		force_sigsegv(ksig->sig);
 		return 1;
 	}
 

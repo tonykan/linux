@@ -66,8 +66,6 @@ extern unsigned long empty_zero_page[];
 
 extern pgd_t swapper_pg_dir[];
 
-void limit_zone_pfn(enum zone_type zone, unsigned long max_pfn);
-int dma_pfn_limit_to_zone(u64 pfn_limit);
 extern void paging_init(void);
 
 /*
@@ -91,9 +89,6 @@ extern void paging_init(void);
  */
 extern void update_mmu_cache(struct vm_area_struct *, unsigned long, pte_t *);
 
-extern int gup_hugepte(pte_t *ptep, unsigned long sz, unsigned long addr,
-		       unsigned long end, int write,
-		       struct page **pages, int *nr);
 #ifndef CONFIG_TRANSPARENT_HUGEPAGE
 #define pmd_large(pmd)		0
 #endif
@@ -101,7 +96,7 @@ extern int gup_hugepte(pte_t *ptep, unsigned long sz, unsigned long addr,
 /* can we use this in kvm */
 unsigned long vmalloc_to_phys(void *vmalloc_addr);
 
-void pgtable_cache_add(unsigned shift, void (*ctor)(void *));
+void pgtable_cache_add(unsigned int shift);
 void pgtable_cache_init(void);
 
 #if defined(CONFIG_STRICT_KERNEL_RWX) || defined(CONFIG_PPC32)
@@ -109,6 +104,79 @@ void mark_initmem_nx(void);
 #else
 static inline void mark_initmem_nx(void) { }
 #endif
+
+#ifdef CONFIG_PPC_DEBUG_WX
+void ptdump_check_wx(void);
+#else
+static inline void ptdump_check_wx(void) { }
+#endif
+
+/*
+ * When used, PTE_FRAG_NR is defined in subarch pgtable.h
+ * so we are sure it is included when arriving here.
+ */
+#ifdef PTE_FRAG_NR
+static inline void *pte_frag_get(mm_context_t *ctx)
+{
+	return ctx->pte_frag;
+}
+
+static inline void pte_frag_set(mm_context_t *ctx, void *p)
+{
+	ctx->pte_frag = p;
+}
+#else
+#define PTE_FRAG_NR		1
+#define PTE_FRAG_SIZE_SHIFT	PAGE_SHIFT
+#define PTE_FRAG_SIZE		(1UL << PTE_FRAG_SIZE_SHIFT)
+
+static inline void *pte_frag_get(mm_context_t *ctx)
+{
+	return NULL;
+}
+
+static inline void pte_frag_set(mm_context_t *ctx, void *p)
+{
+}
+#endif
+
+#ifndef pmd_is_leaf
+#define pmd_is_leaf pmd_is_leaf
+static inline bool pmd_is_leaf(pmd_t pmd)
+{
+	return false;
+}
+#endif
+
+#ifndef pud_is_leaf
+#define pud_is_leaf pud_is_leaf
+static inline bool pud_is_leaf(pud_t pud)
+{
+	return false;
+}
+#endif
+
+#ifndef pgd_is_leaf
+#define pgd_is_leaf pgd_is_leaf
+static inline bool pgd_is_leaf(pgd_t pgd)
+{
+	return false;
+}
+#endif
+
+#ifdef CONFIG_PPC64
+#define is_ioremap_addr is_ioremap_addr
+static inline bool is_ioremap_addr(const void *x)
+{
+#ifdef CONFIG_MMU
+	unsigned long addr = (unsigned long)x;
+
+	return addr >= IOREMAP_BASE && addr < IOREMAP_END;
+#else
+	return false;
+#endif
+}
+#endif /* CONFIG_PPC64 */
 
 #endif /* __ASSEMBLY__ */
 

@@ -3,6 +3,7 @@
  * caam descriptor construction helper functions
  *
  * Copyright 2008-2012 Freescale Semiconductor, Inc.
+ * Copyright 2019 NXP
  */
 
 #ifndef DESC_CONSTR_H
@@ -36,6 +37,16 @@
 			       (LDOFF_ENABLE_AUTO_NFIFO << LDST_OFFSET_SHIFT))
 
 extern bool caam_little_end;
+
+/*
+ * HW fetches 4 S/G table entries at a time, irrespective of how many entries
+ * are in the table. It's SW's responsibility to make sure these accesses
+ * do not have side effects.
+ */
+static inline int pad_sg_nents(int sg_nents)
+{
+	return ALIGN(sg_nents, 4);
+}
 
 static inline int desc_len(u32 * const desc)
 {
@@ -189,6 +200,7 @@ static inline u32 *append_##cmd(u32 * const desc, u32 options) \
 }
 APPEND_CMD_RET(jump, JUMP)
 APPEND_CMD_RET(move, MOVE)
+APPEND_CMD_RET(move_len, MOVE_LEN)
 
 static inline void set_jump_tgt_here(u32 * const desc, u32 *jump_cmd)
 {
@@ -327,7 +339,11 @@ static inline void append_##cmd##_imm_##type(u32 * const desc, type immediate, \
 					     u32 options) \
 { \
 	PRINT_POS; \
-	append_cmd(desc, CMD_##op | IMMEDIATE | options | sizeof(type)); \
+	if (options & LDST_LEN_MASK) \
+		append_cmd(desc, CMD_##op | IMMEDIATE | options); \
+	else \
+		append_cmd(desc, CMD_##op | IMMEDIATE | options | \
+			   sizeof(type)); \
 	append_cmd(desc, immediate); \
 }
 APPEND_CMD_RAW_IMM(load, LOAD, u32);

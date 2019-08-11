@@ -1,19 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2016 - ARM Ltd
  *
  * stage2 page table helpers
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef __ARM64_S2_PGTABLE_H_
@@ -30,16 +19,14 @@
 #define pt_levels_pgdir_shift(lvls)	ARM64_HW_PGTABLE_LEVEL_SHIFT(4 - (lvls))
 
 /*
- * The hardware supports concatenation of up to 16 tables at stage2 entry level
- * and we use the feature whenever possible.
+ * The hardware supports concatenation of up to 16 tables at stage2 entry
+ * level and we use the feature whenever possible, which means we resolve 4
+ * additional bits of address at the entry level.
  *
- * Now, the minimum number of bits resolved at any level is (PAGE_SHIFT - 3).
- * On arm64, the smallest PAGE_SIZE supported is 4k, which means
- *             (PAGE_SHIFT - 3) > 4 holds for all page sizes.
- * This implies, the total number of page table levels at stage2 expected
- * by the hardware is actually the number of levels required for (IPA_SHIFT - 4)
- * in normal translations(e.g, stage1), since we cannot have another level in
- * the range (IPA_SHIFT, IPA_SHIFT - 4).
+ * This implies, the total number of page table levels required for
+ * IPA_SHIFT at stage2 expected by the hardware can be calculated using
+ * the same logic used for the (non-collapsable) stage1 page tables but for
+ * (IPA_SHIFT - 4).
  */
 #define stage2_pgtable_levels(ipa)	ARM64_HW_PGTABLE_LEVELS((ipa) - 4)
 #define kvm_stage2_levels(kvm)		VTCR_EL2_LVLS(kvm->arch.vtcr)
@@ -121,7 +108,7 @@ static inline pud_t *stage2_pud_offset(struct kvm *kvm,
 static inline void stage2_pud_free(struct kvm *kvm, pud_t *pud)
 {
 	if (kvm_stage2_has_pud(kvm))
-		pud_free(NULL, pud);
+		free_page((unsigned long)pud);
 }
 
 static inline bool stage2_pud_table_empty(struct kvm *kvm, pud_t *pudp)
@@ -194,7 +181,7 @@ static inline pmd_t *stage2_pmd_offset(struct kvm *kvm,
 static inline void stage2_pmd_free(struct kvm *kvm, pmd_t *pmd)
 {
 	if (kvm_stage2_has_pmd(kvm))
-		pmd_free(NULL, pmd);
+		free_page((unsigned long)pmd);
 }
 
 static inline bool stage2_pud_huge(struct kvm *kvm, pud_t pud)

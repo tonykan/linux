@@ -3,6 +3,7 @@
  * Controller-level driver, kernel property detection, initialization
  *
  * Copyright 2008-2012 Freescale Semiconductor, Inc.
+ * Copyright 2018-2019 NXP
  */
 
 #include <linux/device.h>
@@ -17,12 +18,8 @@
 #include "desc_constr.h"
 #include "ctrl.h"
 
-bool caam_little_end;
-EXPORT_SYMBOL(caam_little_end);
 bool caam_dpaa2;
 EXPORT_SYMBOL(caam_dpaa2);
-bool caam_imx;
-EXPORT_SYMBOL(caam_imx);
 
 #ifdef CONFIG_CAAM_QI
 #include "qi.h"
@@ -106,7 +103,7 @@ static inline int run_descriptor_deco0(struct device *ctrldev, u32 *desc,
 	struct caam_ctrl __iomem *ctrl = ctrlpriv->ctrl;
 	struct caam_deco __iomem *deco = ctrlpriv->deco;
 	unsigned int timeout = 100000;
-	u32 deco_dbg_reg, flags;
+	u32 deco_dbg_reg, deco_state, flags;
 	int i;
 
 
@@ -149,13 +146,22 @@ static inline int run_descriptor_deco0(struct device *ctrldev, u32 *desc,
 	timeout = 10000000;
 	do {
 		deco_dbg_reg = rd_reg32(&deco->desc_dbg);
+
+		if (ctrlpriv->era < 10)
+			deco_state = (deco_dbg_reg & DESC_DBG_DECO_STAT_MASK) >>
+				     DESC_DBG_DECO_STAT_SHIFT;
+		else
+			deco_state = (rd_reg32(&deco->dbg_exec) &
+				      DESC_DER_DECO_STAT_MASK) >>
+				     DESC_DER_DECO_STAT_SHIFT;
+
 		/*
 		 * If an error occured in the descriptor, then
 		 * the DECO status field will be set to 0x0D
 		 */
-		if ((deco_dbg_reg & DESC_DBG_DECO_STAT_MASK) ==
-		    DESC_DBG_DECO_STAT_HOST_ERR)
+		if (deco_state == DECO_STAT_HOST_ERR)
 			break;
+
 		cpu_relax();
 	} while ((deco_dbg_reg & DESC_DBG_DECO_STAT_VALID) && --timeout);
 
@@ -317,8 +323,8 @@ static int caam_remove(struct platform_device *pdev)
 	of_platform_depopulate(ctrldev);
 
 #ifdef CONFIG_CAAM_QI
-	if (ctrlpriv->qidev)
-		caam_qi_shutdown(ctrlpriv->qidev);
+	if (ctrlpriv->qi_init)
+		caam_qi_shutdown(ctrldev);
 #endif
 
 	/*
@@ -462,6 +468,24 @@ static int caam_get_era(struct caam_ctrl __iomem *ctrl)
 		return caam_get_era_from_hw(ctrl);
 }
 
+/*
+ * ERRATA: imx6 devices (imx6D, imx6Q, imx6DL, imx6S, imx6DP and imx6QP)
+ * have an issue wherein AXI bus transactions may not occur in the correct
+ * order. This isn't a problem running single descriptors, but can be if
+ * running multiple concurrent descriptors. Reworking the driver to throttle
+ * to single requests is impractical, thus the workaround is to limit the AXI
+ * pipeline to a depth of 1 (from it's default of 4) to preclude this situation
+ * from occurring.
+ */
+static void handle_imx6_err005766(u32 *mcr)
+{
+	if (of_machine_is_compatible("fsl,imx6q") ||
+	    of_machine_is_compatible("fsl,imx6dl") ||
+	    of_machine_is_compatible("fsl,imx6qp"))
+		clrsetbits_32(mcr, MCFGR_AXIPIPE_MASK,
+			      1 << MCFGR_AXIPIPE_SHIFT);
+}
+
 static const struct of_device_id caam_match[] = {
 	{
 		.compatible = "fsl,sec-v4.0",
@@ -491,7 +515,7 @@ static int caam_probe(struct platform_device *pdev)
 	struct caam_perfmon *perfmon;
 #endif
 	u32 scfgr, comp_params;
-	u32 cha_vid_ls;
+	u8 rng_vid;
 	int pg_size;
 	int BLOCK_OFFSET = 0;
 
@@ -516,7 +540,8 @@ static int caam_probe(struct platform_device *pdev)
 	ctrlpriv->caam_ipg = clk;
 
 	if (!of_machine_is_compatible("fsl,imx7d") &&
-	    !of_machine_is_compatible("fsl,imx7s")) {
+	    !of_machine_is_compatible("fsl,imx7s") &&
+	    !of_machine_is_compatible("fsl,imx7ulp")) {
 		clk = caam_drv_identify_clk(&pdev->dev, "mem");
 		if (IS_ERR(clk)) {
 			ret = PTR_ERR(clk);
@@ -538,7 +563,8 @@ static int caam_probe(struct platform_device *pdev)
 
 	if (!of_machine_is_compatible("fsl,imx6ul") &&
 	    !of_machine_is_compatible("fsl,imx7d") &&
-	    !of_machine_is_compatible("fsl,imx7s")) {
+	    !of_machine_is_compatible("fsl,imx7s") &&
+	    !of_machine_is_compatible("fsl,imx7ulp")) {
 		clk = caam_drv_identify_clk(&pdev->dev, "emi_slow");
 		if (IS_ERR(clk)) {
 			ret = PTR_ERR(clk);
@@ -634,6 +660,8 @@ static int caam_probe(struct platform_device *pdev)
 			      (sizeof(dma_addr_t) == sizeof(u64) ?
 			       MCFGR_LONG_PTR : 0));
 
+	handle_imx6_err005766(&ctrl->mcr);
+
 	/*
 	 *  Read the Compile Time paramters and SCFGR to determine
 	 * if Virtualization is enabled for this platform
@@ -676,12 +704,7 @@ static int caam_probe(struct platform_device *pdev)
 	}
 
 	ctrlpriv->era = caam_get_era(ctrl);
-
-	ret = of_platform_populate(nprop, caam_match, NULL, dev);
-	if (ret) {
-		dev_err(dev, "JR platform devices creation error\n");
-		goto iounmap_ctrl;
-	}
+	ctrlpriv->domain = iommu_get_domain_for_dev(dev);
 
 #ifdef CONFIG_DEBUG_FS
 	/*
@@ -694,19 +717,6 @@ static int caam_probe(struct platform_device *pdev)
 	ctrlpriv->dfs_root = debugfs_create_dir(dev_name(dev), NULL);
 	ctrlpriv->ctl = debugfs_create_dir("ctl", ctrlpriv->dfs_root);
 #endif
-
-	ring = 0;
-	for_each_available_child_of_node(nprop, np)
-		if (of_device_is_compatible(np, "fsl,sec-v4.0-job-ring") ||
-		    of_device_is_compatible(np, "fsl,sec4.0-job-ring")) {
-			ctrlpriv->jr[ring] = (struct caam_job_ring __iomem __force *)
-					     ((__force uint8_t *)ctrl +
-					     (ring + JR_BLOCK_NUMBER) *
-					      BLOCK_OFFSET
-					     );
-			ctrlpriv->total_jobrs++;
-			ring++;
-		}
 
 	/* Check to see if (DPAA 1.x) QI present. If so, enable */
 	ctrlpriv->qi_present = !!(comp_params & CTPR_MS_QI_MASK);
@@ -726,6 +736,25 @@ static int caam_probe(struct platform_device *pdev)
 #endif
 	}
 
+	ret = of_platform_populate(nprop, caam_match, NULL, dev);
+	if (ret) {
+		dev_err(dev, "JR platform devices creation error\n");
+		goto shutdown_qi;
+	}
+
+	ring = 0;
+	for_each_available_child_of_node(nprop, np)
+		if (of_device_is_compatible(np, "fsl,sec-v4.0-job-ring") ||
+		    of_device_is_compatible(np, "fsl,sec4.0-job-ring")) {
+			ctrlpriv->jr[ring] = (struct caam_job_ring __iomem __force *)
+					     ((__force uint8_t *)ctrl +
+					     (ring + JR_BLOCK_NUMBER) *
+					      BLOCK_OFFSET
+					     );
+			ctrlpriv->total_jobrs++;
+			ring++;
+		}
+
 	/* If no QI and no rings specified, quit and go home */
 	if ((!ctrlpriv->qi_present) && (!ctrlpriv->total_jobrs)) {
 		dev_err(dev, "no queues configured, terminating\n");
@@ -733,15 +762,19 @@ static int caam_probe(struct platform_device *pdev)
 		goto caam_remove;
 	}
 
-	cha_vid_ls = rd_reg32(&ctrl->perfmon.cha_id_ls);
+	if (ctrlpriv->era < 10)
+		rng_vid = (rd_reg32(&ctrl->perfmon.cha_id_ls) &
+			   CHA_ID_LS_RNG_MASK) >> CHA_ID_LS_RNG_SHIFT;
+	else
+		rng_vid = (rd_reg32(&ctrl->vreg.rng) & CHA_VER_VID_MASK) >>
+			   CHA_VER_VID_SHIFT;
 
 	/*
 	 * If SEC has RNG version >= 4 and RNG state handle has not been
 	 * already instantiated, do RNG instantiation
 	 * In case of SoCs with Management Complex, RNG is managed by MC f/w.
 	 */
-	if (!ctrlpriv->mc_en &&
-	    (cha_vid_ls & CHA_ID_LS_RNG_MASK) >> CHA_ID_LS_RNG_SHIFT >= 4) {
+	if (!ctrlpriv->mc_en && rng_vid >= 4) {
 		ctrlpriv->rng4_sh_init =
 			rd_reg32(&ctrl->r4tst[0].rdsta);
 		/*
@@ -849,27 +882,18 @@ static int caam_probe(struct platform_device *pdev)
 	/* Internal covering keys (useful in non-secure mode only) */
 	ctrlpriv->ctl_kek_wrap.data = (__force void *)&ctrlpriv->ctrl->kek[0];
 	ctrlpriv->ctl_kek_wrap.size = KEK_KEY_SIZE * sizeof(u32);
-	ctrlpriv->ctl_kek = debugfs_create_blob("kek",
-						S_IRUSR |
-						S_IRGRP | S_IROTH,
-						ctrlpriv->ctl,
-						&ctrlpriv->ctl_kek_wrap);
+	debugfs_create_blob("kek", S_IRUSR | S_IRGRP | S_IROTH, ctrlpriv->ctl,
+			    &ctrlpriv->ctl_kek_wrap);
 
 	ctrlpriv->ctl_tkek_wrap.data = (__force void *)&ctrlpriv->ctrl->tkek[0];
 	ctrlpriv->ctl_tkek_wrap.size = KEK_KEY_SIZE * sizeof(u32);
-	ctrlpriv->ctl_tkek = debugfs_create_blob("tkek",
-						 S_IRUSR |
-						 S_IRGRP | S_IROTH,
-						 ctrlpriv->ctl,
-						 &ctrlpriv->ctl_tkek_wrap);
+	debugfs_create_blob("tkek", S_IRUSR | S_IRGRP | S_IROTH, ctrlpriv->ctl,
+			    &ctrlpriv->ctl_tkek_wrap);
 
 	ctrlpriv->ctl_tdsk_wrap.data = (__force void *)&ctrlpriv->ctrl->tdsk[0];
 	ctrlpriv->ctl_tdsk_wrap.size = KEK_KEY_SIZE * sizeof(u32);
-	ctrlpriv->ctl_tdsk = debugfs_create_blob("tdsk",
-						 S_IRUSR |
-						 S_IRGRP | S_IROTH,
-						 ctrlpriv->ctl,
-						 &ctrlpriv->ctl_tdsk_wrap);
+	debugfs_create_blob("tdsk", S_IRUSR | S_IRGRP | S_IROTH, ctrlpriv->ctl,
+			    &ctrlpriv->ctl_tdsk_wrap);
 #endif
 	return 0;
 
@@ -877,6 +901,11 @@ caam_remove:
 	caam_remove(pdev);
 	return ret;
 
+shutdown_qi:
+#ifdef CONFIG_CAAM_QI
+	if (ctrlpriv->qi_init)
+		caam_qi_shutdown(dev);
+#endif
 iounmap_ctrl:
 	iounmap(ctrl);
 disable_caam_emi_slow:

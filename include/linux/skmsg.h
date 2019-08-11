@@ -36,6 +36,7 @@ struct sk_msg_sg {
 	struct scatterlist		data[MAX_MSG_FRAGS + 1];
 };
 
+/* UAPI in filter.c depends on struct sk_msg_sg being first element. */
 struct sk_msg {
 	struct sk_msg_sg		sg;
 	void				*data;
@@ -350,8 +351,16 @@ static inline void sk_psock_update_proto(struct sock *sk,
 static inline void sk_psock_restore_proto(struct sock *sk,
 					  struct sk_psock *psock)
 {
+	sk->sk_write_space = psock->saved_write_space;
+
 	if (psock->sk_proto) {
-		sk->sk_prot = psock->sk_proto;
+		struct inet_connection_sock *icsk = inet_csk(sk);
+		bool has_ulp = !!icsk->icsk_ulp_data;
+
+		if (has_ulp)
+			tcp_update_ulp(sk, psock->sk_proto);
+		else
+			sk->sk_prot = psock->sk_proto;
 		psock->sk_proto = NULL;
 	}
 }
@@ -414,6 +423,14 @@ static inline void sk_psock_put(struct sock *sk, struct sk_psock *psock)
 {
 	if (refcount_dec_and_test(&psock->refcnt))
 		sk_psock_drop(sk, psock);
+}
+
+static inline void sk_psock_data_ready(struct sock *sk, struct sk_psock *psock)
+{
+	if (psock->parser.enabled)
+		psock->parser.saved_data_ready(sk);
+	else
+		sk->sk_data_ready(sk);
 }
 
 static inline void psock_set_prog(struct bpf_prog **pprog,

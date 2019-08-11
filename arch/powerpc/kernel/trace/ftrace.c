@@ -107,7 +107,7 @@ static int is_b_op(unsigned int op)
 
 static unsigned long find_bl_target(unsigned long ip, unsigned int op)
 {
-	static int offset;
+	int offset;
 
 	offset = (op & 0x03fffffc);
 	/* make it signed */
@@ -866,10 +866,6 @@ void arch_ftrace_update_code(int command)
 #ifdef CONFIG_PPC64
 #define PACATOC offsetof(struct paca_struct, kernel_toc)
 
-#define PPC_LO(v) ((v) & 0xffff)
-#define PPC_HI(v) (((v) >> 16) & 0xffff)
-#define PPC_HA(v) PPC_HI ((v) + 0x8000)
-
 extern unsigned int ftrace_tramp_text[], ftrace_tramp_init[];
 
 int __init ftrace_dyn_arch_init(void)
@@ -966,13 +962,6 @@ out:
 	return parent;
 }
 #endif /* CONFIG_FUNCTION_GRAPH_TRACER */
-
-#if defined(CONFIG_FTRACE_SYSCALLS) && defined(CONFIG_PPC64)
-unsigned long __init arch_syscall_addr(int nr)
-{
-	return sys_call_table[nr*2];
-}
-#endif /* CONFIG_FTRACE_SYSCALLS && CONFIG_PPC64 */
 
 #ifdef PPC64_ELF_ABI_v1
 char *arch_ftrace_match_adjust(char *str, const char *search)

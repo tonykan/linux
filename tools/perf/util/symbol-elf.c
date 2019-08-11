@@ -2,21 +2,40 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <inttypes.h>
 
+#include "map.h"
+#include "map_groups.h"
 #include "symbol.h"
 #include "demangle-java.h"
 #include "demangle-rust.h"
 #include "machine.h"
 #include "vdso.h"
 #include "debug.h"
-#include "sane_ctype.h"
+#include "util.h"
+#include <linux/ctype.h>
+#include <linux/zalloc.h>
 #include <symbol/kallsyms.h>
 
 #ifndef EM_AARCH64
 #define EM_AARCH64	183  /* ARM 64 bit */
+#endif
+
+#ifndef ELF32_ST_VISIBILITY
+#define ELF32_ST_VISIBILITY(o)	((o) & 0x03)
+#endif
+
+/* For ELF64 the definitions are the same.  */
+#ifndef ELF64_ST_VISIBILITY
+#define ELF64_ST_VISIBILITY(o)	ELF32_ST_VISIBILITY (o)
+#endif
+
+/* How to extract information held in the st_other field.  */
+#ifndef GELF_ST_VISIBILITY
+#define GELF_ST_VISIBILITY(val)	ELF64_ST_VISIBILITY (val)
 #endif
 
 typedef Elf64_Nhdr GElf_Nhdr;
@@ -87,6 +106,11 @@ static inline uint8_t elf_sym__type(const GElf_Sym *sym)
 	return GELF_ST_TYPE(sym->st_info);
 }
 
+static inline uint8_t elf_sym__visibility(const GElf_Sym *sym)
+{
+	return GELF_ST_VISIBILITY(sym->st_other);
+}
+
 #ifndef STT_GNU_IFUNC
 #define STT_GNU_IFUNC 10
 #endif
@@ -111,7 +135,9 @@ static inline int elf_sym__is_label(const GElf_Sym *sym)
 	return elf_sym__type(sym) == STT_NOTYPE &&
 		sym->st_name != 0 &&
 		sym->st_shndx != SHN_UNDEF &&
-		sym->st_shndx != SHN_ABS;
+		sym->st_shndx != SHN_ABS &&
+		elf_sym__visibility(sym) != STV_HIDDEN &&
+		elf_sym__visibility(sym) != STV_INTERNAL;
 }
 
 static bool elf_sym__filter(GElf_Sym *sym)
@@ -676,7 +702,6 @@ bool __weak elf__needs_adjust_symbols(GElf_Ehdr ehdr)
 int symsrc__init(struct symsrc *ss, struct dso *dso, const char *name,
 		 enum dso_binary_type type)
 {
-	int err = -1;
 	GElf_Ehdr ehdr;
 	Elf *elf;
 	int fd;
@@ -770,7 +795,7 @@ out_elf_end:
 	elf_end(elf);
 out_close:
 	close(fd);
-	return err;
+	return -1;
 }
 
 /**
@@ -1453,7 +1478,7 @@ static void kcore_copy__free_phdrs(struct kcore_copy_info *kci)
 	struct phdr_data *p, *tmp;
 
 	list_for_each_entry_safe(p, tmp, &kci->phdrs, node) {
-		list_del(&p->node);
+		list_del_init(&p->node);
 		free(p);
 	}
 }
@@ -1476,7 +1501,7 @@ static void kcore_copy__free_syms(struct kcore_copy_info *kci)
 	struct sym_data *s, *tmp;
 
 	list_for_each_entry_safe(s, tmp, &kci->syms, node) {
-		list_del(&s->node);
+		list_del_init(&s->node);
 		free(s);
 	}
 }
@@ -2108,11 +2133,11 @@ static int populate_sdt_note(Elf **elf, const char *data, size_t len,
 	return 0;
 
 out_free_args:
-	free(tmp->args);
+	zfree(&tmp->args);
 out_free_name:
-	free(tmp->name);
+	zfree(&tmp->name);
 out_free_prov:
-	free(tmp->provider);
+	zfree(&tmp->provider);
 out_free_note:
 	free(tmp);
 out_err:
@@ -2227,9 +2252,9 @@ int cleanup_sdt_note_list(struct list_head *sdt_notes)
 	int nr_free = 0;
 
 	list_for_each_entry_safe(pos, tmp, sdt_notes, note_list) {
-		list_del(&pos->note_list);
-		free(pos->name);
-		free(pos->provider);
+		list_del_init(&pos->note_list);
+		zfree(&pos->name);
+		zfree(&pos->provider);
 		free(pos);
 		nr_free++;
 	}

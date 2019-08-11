@@ -26,9 +26,8 @@ void cedrus_device_run(void *priv)
 {
 	struct cedrus_ctx *ctx = priv;
 	struct cedrus_dev *dev = ctx->dev;
-	struct cedrus_run run = { 0 };
+	struct cedrus_run run = {};
 	struct media_request *src_req;
-	unsigned long flags;
 
 	run.src = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
 	run.dst = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
@@ -39,8 +38,6 @@ void cedrus_device_run(void *priv)
 	if (src_req)
 		v4l2_ctrl_request_setup(src_req, &ctx->hdl);
 
-	spin_lock_irqsave(&ctx->dev->irq_lock, flags);
-
 	switch (ctx->src_fmt.pixelformat) {
 	case V4L2_PIX_FMT_MPEG2_SLICE:
 		run.mpeg2.slice_params = cedrus_find_control_data(ctx,
@@ -49,22 +46,31 @@ void cedrus_device_run(void *priv)
 			V4L2_CID_MPEG_VIDEO_MPEG2_QUANTIZATION);
 		break;
 
+	case V4L2_PIX_FMT_H264_SLICE_RAW:
+		run.h264.decode_params = cedrus_find_control_data(ctx,
+			V4L2_CID_MPEG_VIDEO_H264_DECODE_PARAMS);
+		run.h264.pps = cedrus_find_control_data(ctx,
+			V4L2_CID_MPEG_VIDEO_H264_PPS);
+		run.h264.scaling_matrix = cedrus_find_control_data(ctx,
+			V4L2_CID_MPEG_VIDEO_H264_SCALING_MATRIX);
+		run.h264.slice_params = cedrus_find_control_data(ctx,
+			V4L2_CID_MPEG_VIDEO_H264_SLICE_PARAMS);
+		run.h264.sps = cedrus_find_control_data(ctx,
+			V4L2_CID_MPEG_VIDEO_H264_SPS);
+		break;
+
 	default:
 		break;
 	}
 
-	dev->dec_ops[ctx->current_codec]->setup(ctx, &run);
+	v4l2_m2m_buf_copy_metadata(run.src, run.dst, true);
 
-	spin_unlock_irqrestore(&ctx->dev->irq_lock, flags);
+	dev->dec_ops[ctx->current_codec]->setup(ctx, &run);
 
 	/* Complete request(s) controls if needed. */
 
 	if (src_req)
 		v4l2_ctrl_request_complete(src_req, &ctx->hdl);
 
-	spin_lock_irqsave(&ctx->dev->irq_lock, flags);
-
 	dev->dec_ops[ctx->current_codec]->trigger(ctx);
-
-	spin_unlock_irqrestore(&ctx->dev->irq_lock, flags);
 }
